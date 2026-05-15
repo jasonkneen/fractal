@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import dspy
+from predict_rlm import PredictRLM, Workspace
+
+from .schema import FractalResult
+from .signature import EditWorkspace
+from .skills import filesystem_coding_skill
+
+
+class FractalAgent(dspy.Module):
+    """Thin DSPy module wrapping Fractal's workspace-editing RLM."""
+
+    def __init__(
+        self,
+        lm: dspy.LM | str | None = None,
+        sub_lm: dspy.LM | str | None = None,
+        max_iterations: int = 30,
+        verbose: bool = True,
+        debug: bool = False,
+    ) -> None:
+        self.lm = lm
+        self.sub_lm = sub_lm
+        self.max_iterations = max_iterations
+        self.verbose = verbose
+        self.debug = debug
+
+    async def aforward(
+        self,
+        workspace_path: str | Path,
+        user_message: str,
+        session_summary: str = "",
+    ) -> FractalResult:
+        workspace = Workspace(path=str(Path(workspace_path)))
+        if ".fractal" not in workspace.exclude:
+            workspace.exclude = [*workspace.exclude, ".fractal"]
+
+        predictor = PredictRLM(
+            EditWorkspace,
+            lm=self.lm,
+            sub_lm=self.sub_lm,
+            skills=[filesystem_coding_skill],
+            max_iterations=self.max_iterations,
+            verbose=self.verbose,
+            debug=self.debug,
+        )
+        result = await predictor.acall(
+            workspace=workspace,
+            user_message=user_message,
+            session_summary=session_summary,
+        )
+        return _coerce_result(result)
+
+
+def _coerce_result(prediction: Any) -> FractalResult:
+    response = str(getattr(prediction, "response", "") or "")
+    changed_files = _coerce_changed_files(getattr(prediction, "changed_files", None))
+    return FractalResult(response=response, changed_files=changed_files)
+
+
+def _coerce_changed_files(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [str(path) for path in value]
+    if isinstance(value, dict):
+        raise TypeError("changed_files must be a string or a sequence of paths, not a dict")
+    try:
+        return [str(path) for path in list(value)]
+    except TypeError:
+        return [str(value)]
