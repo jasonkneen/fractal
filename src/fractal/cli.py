@@ -32,7 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def run_repl(args: argparse.Namespace) -> int:
-    from .agent.service import FractalAgent
+    from predict_rlm.trace import extract_trace_from_exc
+
+    from .agent.service import FractalAgent, coerce_trace
 
     workspace = args.workspace.resolve()
     session = FractalSession.load(workspace)
@@ -59,20 +61,36 @@ async def run_repl(args: argparse.Namespace) -> int:
         if user_message in {"/exit", "/quit"}:
             return 0
         if user_message == "/status":
-            print(f"session: {session_path(workspace)}")
+            print(f"session id: {session.session_id}")
+            print(f"session: {session_path(workspace, session.session_id)}")
             print(f"turns: {len(session.turns)}")
             continue
 
-        summary = session.summary()
-        session.add_user_message(user_message)
+        turn_id = session.add_user_message(user_message)
         session.save(workspace)
 
-        result = await agent.aforward(
-            workspace_path=workspace,
-            user_message=user_message,
-            session_summary=summary,
+        try:
+            result = await agent.aforward(
+                workspace_path=workspace,
+                user_message=user_message,
+                rendered_session_summary=session.summary(),
+                session_history=session.session_history_payload(),
+            )
+        except Exception as exc:
+            session.add_agent_failure(
+                str(exc),
+                trace=coerce_trace(extract_trace_from_exc(exc)),
+                turn_id=turn_id,
+            )
+            session.save(workspace)
+            raise
+
+        session.add_agent_response(
+            result.response,
+            result.changed_files,
+            trace=result.trace,
+            turn_id=turn_id,
         )
-        session.add_agent_response(result.response, result.changed_files)
         session.save(workspace)
 
         if result.response:

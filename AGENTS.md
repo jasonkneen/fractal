@@ -13,12 +13,14 @@ blocks run.
 - RLM signature: `src/fractal/agent/signature.py`.
 - PredictRLM skill instructions: `src/fractal/agent/skills.py`.
 - Session persistence: `src/fractal/session.py`.
-- Tests: `tests/test_smoke.py`.
+- Smoke tests: `tests/test_smoke.py`.
+- Session tests: `tests/test_session.py`.
 
-The current implementation is intentionally thin. It stores a capped turn list
-in `.fractal/session.json`, passes a plain session summary into PredictRLM, and
-trusts the model-returned `changed_files` field. The Linear roadmap tracks the
-work needed to turn this into a reliable daily-use coding agent.
+The current implementation stores structured session summaries and bounded
+PredictRLM history under `.fractal/sessions/<session_id>.json`. Fractal starts a
+fresh random session ID today; explicit resume-by-ID selection is still roadmap
+work. The Linear roadmap tracks the remaining work needed to turn this into a
+reliable daily-use coding agent.
 
 ## Local Commands
 
@@ -64,6 +66,10 @@ detection, branch/worktree awareness, and optional commit generation.
   commands run, verification status, and errors.
 - Preserve user work. Fractal should not overwrite unrelated edits or hide dirty
   workspace state.
+- Add comments for non-obvious decisions, not for mechanics. Explain why code is
+  shaped a certain way, especially around session state, PredictRLM prompt
+  wiring, persistence, recovery, safety, and retention. Avoid comments that only
+  restate what the next line of code does.
 - Persist enough state to recover from failures. A failed agent turn should
   leave useful session records, error details, changed files, and verification
   context.
@@ -84,9 +90,7 @@ detection, branch/worktree awareness, and optional commit generation.
 
 - There is no host command execution tool yet.
 - There is no robust approval/sandbox policy yet.
-- Session state is still a shallow capped transcript.
-- Context building is just a string summary.
+- There is no explicit resume-by-ID CLI flow yet.
 - Changed files are currently coerced from model output.
 - There is no git checkpoint, diff review, or rollback layer yet.
 - There is no MCP/plugin system beyond the planned standard skill loader.
-

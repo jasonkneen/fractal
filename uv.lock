@@ -442,6 +442,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "predict-rlm" },
+    { name = "pydantic" },
 ]
 
 [package.dev-dependencies]
@@ -450,7 +451,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "predict-rlm", editable = "../predict-rlm" }]
+requires-dist = [
+    { name = "predict-rlm", editable = "../predict-rlm" },
+    { name = "pydantic", specifier = ">=2" },
+]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]

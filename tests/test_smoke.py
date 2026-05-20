@@ -28,31 +28,22 @@ def test_cli_parser_defaults_to_cwd() -> None:
     assert args.max_iterations == 30
 
 
-def test_session_round_trip(tmp_path: Path) -> None:
-    from fractal.session import FractalSession
-
-    session = FractalSession(turns=[])
-    session.add_user_message("change the README")
-    session.add_agent_response("updated", ["README.md"])
-    session.save(tmp_path)
-
-    loaded = FractalSession.load(tmp_path)
-
-    assert "change the README" in loaded.summary()
-    assert loaded.turns[-1].changed_files == ["README.md"]
-
-
 def test_signature_fields() -> None:
     if not workspace_available():
         pytest.skip("predict_rlm.Workspace is not exported by the local branch yet")
 
-    from fractal.agent.signature import EditWorkspace
+    from fractal.agent.signature import build_edit_workspace_signature
+    from fractal.session import SessionHistoryTurn
 
-    fields = EditWorkspace.model_fields
+    signature = build_edit_workspace_signature("User: fix tests")
+    fields = signature.model_fields
 
-    assert {"workspace", "user_message", "session_summary", "response", "changed_files"} <= set(
+    assert {"workspace", "user_message", "session_history", "response", "changed_files"} <= set(
         fields
     )
+    assert "session_summary" not in fields
+    assert fields["session_history"].annotation == list[SessionHistoryTurn]
+    assert "User: fix tests" in signature.instructions
 
 
 def test_service_construction() -> None:
@@ -73,6 +64,7 @@ def test_agent_aforward_constructs_rlm_and_workspace(monkeypatch: pytest.MonkeyP
         pytest.skip("predict_rlm.Workspace is not exported by the local branch yet")
 
     from fractal.agent import service
+    from fractal.session import SessionHistoryTurn
 
     calls: dict[str, object] = {}
 
@@ -88,12 +80,29 @@ def test_agent_aforward_constructs_rlm_and_workspace(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(service, "PredictRLM", FakePredictRLM)
 
-    agent = service.FractalAgent(max_iterations=7, verbose=False, debug=True)
-    result = asyncio.run(
-        agent.aforward(tmp_path, "update the README", session_summary="previous context")
+    history_turn = SessionHistoryTurn(
+        turn_id="turn-1",
+        user_message="previous",
+        status="succeeded",
+        created_at="2026-05-19T00:00:00+00:00",
+        updated_at="2026-05-19T00:00:00+00:00",
     )
 
-    assert calls["signature"] is service.EditWorkspace
+    agent = service.FractalAgent(max_iterations=7, verbose=False, debug=True)
+    result = asyncio.run(
+        agent.aforward(
+            tmp_path,
+            "update the README",
+            rendered_session_summary="previous context",
+            session_history=[history_turn],
+        )
+    )
+
+    signature = calls["signature"]
+    assert isinstance(signature, type)
+    assert "previous context" in signature.instructions
+    assert "session_summary" not in signature.model_fields
+    assert "session_history" in signature.model_fields
     assert calls["kwargs"] == {
         "lm": None,
         "sub_lm": None,
@@ -110,7 +119,7 @@ def test_agent_aforward_constructs_rlm_and_workspace(monkeypatch: pytest.MonkeyP
     assert workspace.path == str(tmp_path)
     assert ".fractal" in workspace.exclude
     assert acall_kwargs["user_message"] == "update the README"
-    assert acall_kwargs["session_summary"] == "previous context"
+    assert acall_kwargs["session_history"] == [history_turn]
     assert result.changed_files == ["README.md"]
 
 

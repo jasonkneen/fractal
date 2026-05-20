@@ -4,11 +4,12 @@ from pathlib import Path
 from typing import Any
 
 import dspy
-from predict_rlm import PredictRLM, Workspace
+from predict_rlm import PredictRLM, RunTrace, Workspace
 
 from .schema import FractalResult
-from .signature import EditWorkspace
+from .signature import build_edit_workspace_signature
 from .skills import filesystem_coding_skill
+from ..session import SessionHistoryTurn
 
 
 class FractalAgent(dspy.Module):
@@ -32,14 +33,16 @@ class FractalAgent(dspy.Module):
         self,
         workspace_path: str | Path,
         user_message: str,
-        session_summary: str = "",
+        rendered_session_summary: str = "",
+        session_history: list[SessionHistoryTurn] | None = None,
     ) -> FractalResult:
         workspace = Workspace(path=str(Path(workspace_path)))
         if ".fractal" not in workspace.exclude:
             workspace.exclude = [*workspace.exclude, ".fractal"]
 
+        signature = build_edit_workspace_signature(rendered_session_summary)
         predictor = PredictRLM(
-            EditWorkspace,
+            signature,
             lm=self.lm,
             sub_lm=self.sub_lm,
             skills=[filesystem_coding_skill],
@@ -50,7 +53,7 @@ class FractalAgent(dspy.Module):
         result = await predictor.acall(
             workspace=workspace,
             user_message=user_message,
-            session_summary=session_summary,
+            session_history=session_history or [],
         )
         return _coerce_result(result)
 
@@ -58,7 +61,25 @@ class FractalAgent(dspy.Module):
 def _coerce_result(prediction: Any) -> FractalResult:
     response = str(getattr(prediction, "response", "") or "")
     changed_files = _coerce_changed_files(getattr(prediction, "changed_files", None))
-    return FractalResult(response=response, changed_files=changed_files)
+    return FractalResult(
+        response=response,
+        changed_files=changed_files,
+        trace=coerce_trace(getattr(prediction, "trace", None)),
+    )
+
+
+def coerce_trace(trace: Any) -> RunTrace | None:
+    # Fractal persists PredictRLM's trace as typed state. Normalize at the
+    # service boundary so session code never handles an untyped trace blob.
+    if trace is None:
+        return None
+    if isinstance(trace, RunTrace):
+        return trace
+    if isinstance(trace, dict):
+        return RunTrace.model_validate(trace)
+    if hasattr(trace, "model_dump"):
+        return RunTrace.model_validate(trace.model_dump(mode="python"))
+    raise TypeError(f"Unsupported PredictRLM trace type: {type(trace).__name__}")
 
 
 def _coerce_changed_files(value: Any) -> list[str]:

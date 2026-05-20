@@ -5,6 +5,7 @@ description = "Interactive coding-agent CLI built around a Recursive Language Mo
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "pydantic>=2",
     "predict-rlm",
 ]
 
