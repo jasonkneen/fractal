@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import dspy
-from predict_rlm import PredictRLM, RunTrace, Workspace
+from predict_rlm import PredictRLM, RunTrace, Workspace, WorkspaceMode
 
 from .schema import FractalResult
 from .signature import build_edit_workspace_signature
@@ -36,7 +36,11 @@ class FractalAgent(dspy.Module):
         rendered_session_summary: str = "",
         session_history: list[SessionHistoryTurn] | None = None,
     ) -> FractalResult:
-        workspace = Workspace(path=str(Path(workspace_path)))
+        workspace = Workspace(
+            path=str(Path(workspace_path)),
+            mount_path="/workspace",
+            mode=WorkspaceMode.DIRECT,
+        )
         if ".fractal" not in workspace.exclude:
             workspace.exclude = [*workspace.exclude, ".fractal"]
 
@@ -49,6 +53,7 @@ class FractalAgent(dspy.Module):
             max_iterations=self.max_iterations,
             verbose=self.verbose,
             debug=self.debug,
+            sandbox_backend="sbx",
         )
         result = await predictor.acall(
             workspace=workspace,
@@ -90,7 +95,9 @@ def _coerce_changed_files(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(path) for path in value]
     if isinstance(value, dict):
-        raise TypeError("changed_files must be a string or a sequence of paths, not a dict")
+        raise TypeError(
+            "changed_files must be a string or a sequence of paths, not a dict"
+        )
     try:
         return [str(path) for path in list(value)]
     except TypeError:

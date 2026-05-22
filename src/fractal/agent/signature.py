@@ -9,14 +9,14 @@ from fractal.session import SessionHistoryTurn
 BASE_EDIT_WORKSPACE_INSTRUCTIONS = """Act as a focused coding agent over the mounted workspace.
 
 You receive:
-- `workspace`: mutable project workspace mounted at /sandbox/workspace.
+- `workspace`: mutable project workspace path.
 - `user_message`: the user's current request.
 - `session_history`: detailed prior Fractal turn history with PredictRLM traces.
 
-Inspect and edit files only through Python code in /sandbox/workspace. Prefer
-pathlib/os operations rooted at /sandbox/workspace, and prefer os.open with
-dir_fd/root_fd, os.pread/os.pwrite/os.ftruncate, and temp-file plus os.replace
-patterns when they make edits safer.
+Inspect and edit files only under the `workspace` path. Prefer pathlib/os
+operations rooted at `workspace`, and prefer os.open with dir_fd/root_fd,
+os.pread/os.pwrite/os.ftruncate, and temp-file plus os.replace patterns when
+they make edits safer.
 
 Keep changes focused on the current user request. Inspect files before modifying
 them, preserve unrelated content, and verify important edits. Return only a
@@ -54,8 +54,8 @@ exact prior REPL reasoning, code, outputs, tool calls, or predict calls, inspect
 
         workspace: Workspace = dspy.InputField(
             desc=(
-                "Project workspace mounted at /sandbox/workspace and synced "
-                "after code blocks."
+                "Project workspace path. In direct SBX mode this is a real "
+                "sandbox-visible path that Python subprocesses can use."
             )
         )
         user_message: str = dspy.InputField(
@@ -75,7 +75,7 @@ exact prior REPL reasoning, code, outputs, tool calls, or predict calls, inspect
             )
         )
         changed_files: list[str] = dspy.OutputField(
-            desc="Relative paths of files changed in /sandbox/workspace."
+            desc="Relative paths of files changed under the workspace path."
         )
 
     return EditWorkspaceWithSession

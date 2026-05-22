@@ -120,6 +120,7 @@ def test_agent_aforward_constructs_rlm_and_workspace(monkeypatch: pytest.MonkeyP
         "max_iterations": 7,
         "verbose": False,
         "debug": True,
+        "sandbox_backend": "sbx",
     }
     assert calls["acall_count"] == 1
     acall_kwargs = calls["acall_kwargs"]
@@ -127,6 +128,8 @@ def test_agent_aforward_constructs_rlm_and_workspace(monkeypatch: pytest.MonkeyP
     workspace = acall_kwargs["workspace"]
     assert isinstance(workspace, service.Workspace)
     assert workspace.path == str(tmp_path)
+    assert workspace.mount_path == "/workspace"
+    assert workspace.mode is service.WorkspaceMode.DIRECT
     assert ".fractal" in workspace.exclude
     assert acall_kwargs["user_message"] == "update the README"
     assert acall_kwargs["session_history"] == [history_turn]
