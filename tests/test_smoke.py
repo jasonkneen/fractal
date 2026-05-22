@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -36,6 +37,180 @@ def test_cli_parser_accepts_resume_session_id() -> None:
     args = build_parser().parse_args(["--resume", "session-123"])
 
     assert args.resume == "session-123"
+
+
+def test_cli_parser_accepts_non_interactive_prompt() -> None:
+    from fractal.cli import build_parser
+
+    args = build_parser().parse_args(["-p", "update docs"])
+
+    assert args.prompt == "update docs"
+
+
+def test_cli_main_dispatches_non_interactive_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fractal import cli
+
+    calls: list[object] = []
+
+    def fake_run_non_interactive(args: object) -> int:
+        calls.append(args)
+        return 23
+
+    def fake_run_tui(args: object) -> int:
+        raise AssertionError("TUI should not run")
+
+    monkeypatch.setattr(cli, "run_non_interactive", fake_run_non_interactive)
+    monkeypatch.setattr(cli, "run_tui", fake_run_tui)
+
+    assert cli.main(["-p", "update docs"]) == 23
+    assert len(calls) == 1
+
+
+def test_build_non_interactive_message_appends_stdin_context() -> None:
+    from fractal.cli import build_non_interactive_message
+
+    message = build_non_interactive_message("explain this", "line 1\nline 2\n")
+
+    assert message.startswith("explain this\n\n<Fractal stdin context>")
+    assert "line 1\nline 2\n" in message
+    assert message.endswith("\n</Fractal stdin context>")
+
+
+def test_build_non_interactive_message_uses_stdin_as_prompt() -> None:
+    from fractal.cli import build_non_interactive_message
+
+    assert build_non_interactive_message("-", "do the task") == "do the task"
+
+
+def test_run_non_interactive_prints_response_and_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from fractal.agent.schema import FractalResult
+    from fractal import cli
+    from fractal.runtime import FractalRuntime
+
+    calls: dict[str, object] = {}
+
+    class FakeRuntime:
+        workspace_path = tmp_path
+        session_id = "session-123"
+
+        async def submit(self, message: str) -> FractalResult:
+            calls["message"] = message
+            return FractalResult(response="done", changed_files=["README.md"])
+
+    def fake_create(**kwargs: object) -> FakeRuntime:
+        calls["create_kwargs"] = kwargs
+        return FakeRuntime()
+
+    monkeypatch.setattr(FractalRuntime, "create", fake_create)
+    args = cli.build_parser().parse_args(
+        ["--workspace", str(tmp_path), "-p", "update docs"]
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = cli.run_non_interactive(
+        args,
+        stdin=StringIO("extra context"),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "done\n"
+    assert calls["message"] == (
+        "update docs\n\n"
+        "<Fractal stdin context>\n"
+        "extra context"
+        "\n</Fractal stdin context>"
+    )
+    assert "fractal: session session-123" in stderr.getvalue()
+    assert "fractal: changed files README.md" in stderr.getvalue()
+    create_kwargs = calls["create_kwargs"]
+    assert isinstance(create_kwargs, dict)
+    assert create_kwargs["workspace_path"] == tmp_path
+    assert create_kwargs["verbose"] is False
+
+
+def test_run_non_interactive_reads_dash_prompt_from_stdin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from fractal.agent.schema import FractalResult
+    from fractal import cli
+    from fractal.runtime import FractalRuntime
+
+    calls: dict[str, object] = {}
+
+    class FakeRuntime:
+        workspace_path = tmp_path
+        session_id = "session-123"
+
+        async def submit(self, message: str) -> FractalResult:
+            calls["message"] = message
+            return FractalResult(response="done")
+
+    monkeypatch.setattr(
+        FractalRuntime,
+        "create",
+        lambda **kwargs: FakeRuntime(),
+    )
+    args = cli.build_parser().parse_args(["--workspace", str(tmp_path), "-p", "-"])
+
+    exit_code = cli.run_non_interactive(
+        args,
+        stdin=StringIO("full prompt"),
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    assert calls["message"] == "full prompt"
+
+
+def test_run_non_interactive_returns_distinct_code_for_max_iterations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from predict_rlm import RunTrace
+
+    from fractal.agent.schema import FractalResult
+    from fractal import cli
+    from fractal.runtime import FractalRuntime
+
+    trace = RunTrace(
+        status="max_iterations",
+        model="test-model",
+        iterations=2,
+        max_iterations=2,
+        duration_ms=10,
+    )
+
+    class FakeRuntime:
+        workspace_path = tmp_path
+        session_id = "session-123"
+
+        async def submit(self, message: str) -> FractalResult:
+            return FractalResult(response="partial", trace=trace)
+
+    monkeypatch.setattr(
+        FractalRuntime,
+        "create",
+        lambda **kwargs: FakeRuntime(),
+    )
+    args = cli.build_parser().parse_args(["--workspace", str(tmp_path), "-p", "finish"])
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = cli.run_non_interactive(
+        args,
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == cli.MAX_ITERATIONS_EXIT_CODE
+    assert stdout.getvalue() == "partial\n"
+    assert "fractal: max iterations reached" in stderr.getvalue()
 
 
 def test_signature_fields() -> None:

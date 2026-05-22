@@ -3,6 +3,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 from pathlib import Path
+import sys
+from typing import TextIO
+
+
+MAX_STDIN_BYTES = 10 * 1024 * 1024
+MAX_ITERATIONS_EXIT_CODE = 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +37,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--debug", action="store_true", help="enable PredictRLM debug mode"
     )
+    parser.add_argument(
+        "-p",
+        "--prompt",
+        help=(
+            "run one Fractal turn non-interactively with this prompt; use '-' "
+            "to read the full prompt from stdin"
+        ),
+    )
     return parser
 
 
@@ -52,9 +66,130 @@ def run_tui(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_non_interactive(
+    args: argparse.Namespace,
+    *,
+    stdin: TextIO | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+) -> int:
+    from .runtime import FractalRuntime
+
+    stdin = stdin or sys.stdin
+    stdout = stdout or sys.stdout
+    stderr = stderr or sys.stderr
+
+    try:
+        stdin_text = read_non_interactive_stdin(args.prompt, stdin)
+        message = build_non_interactive_message(args.prompt, stdin_text)
+    except ValueError as exc:
+        print(f"fractal: {exc}", file=stderr)
+        return 1
+
+    workspace = args.workspace.resolve()
+    try:
+        runtime = FractalRuntime.create(
+            workspace_path=workspace,
+            lm=args.lm,
+            sub_lm=args.sub_lm,
+            max_iterations=args.max_iterations,
+            verbose=False,
+            debug=args.debug,
+            session_id=args.resume,
+        )
+    except Exception as exc:
+        print(f"fractal: {exc}", file=stderr)
+        return 1
+
+    if not args.quiet:
+        print(f"fractal: workspace {runtime.workspace_path}", file=stderr)
+        print(f"fractal: session {runtime.session_id}", file=stderr)
+        print("fractal: running RLM...", file=stderr)
+
+    try:
+        result = asyncio.run(runtime.submit(message))
+    except KeyboardInterrupt:
+        print("fractal: interrupted", file=stderr)
+        return 130
+    except Exception as exc:
+        print(f"fractal: failed: {exc}", file=stderr)
+        return 1
+
+    if result.response:
+        stdout.write(result.response)
+        if not result.response.endswith("\n"):
+            stdout.write("\n")
+
+    if result.changed_files and not args.quiet:
+        print(
+            "fractal: changed files "
+            + ", ".join(result.changed_files),
+            file=stderr,
+        )
+
+    if result.trace is not None and result.trace.status == "max_iterations":
+        print("fractal: max iterations reached before completion", file=stderr)
+        return MAX_ITERATIONS_EXIT_CODE
+
+    if not args.quiet:
+        print("fractal: complete", file=stderr)
+    return 0
+
+
+def read_non_interactive_stdin(prompt: str, stdin: TextIO) -> str | None:
+    if prompt == "-":
+        stdin_text = _read_limited_stdin(stdin)
+        if not stdin_text:
+            raise ValueError("-p - requires stdin input")
+        return stdin_text
+
+    if _stdin_is_tty(stdin):
+        return None
+    stdin_text = _read_limited_stdin(stdin)
+    return stdin_text or None
+
+
+def build_non_interactive_message(prompt: str, stdin_text: str | None) -> str:
+    if prompt == "-":
+        return stdin_text or ""
+    if stdin_text is None:
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        "<Fractal stdin context>\n"
+        f"{stdin_text}"
+        "\n</Fractal stdin context>"
+    )
+
+
+def _read_limited_stdin(stdin: TextIO) -> str:
+    chunks: list[str] = []
+    total_bytes = 0
+    while True:
+        chunk = stdin.read(8192)
+        if chunk == "":
+            break
+        total_bytes += len(chunk.encode("utf-8"))
+        if total_bytes > MAX_STDIN_BYTES:
+            raise ValueError(
+                f"stdin input exceeds {MAX_STDIN_BYTES // (1024 * 1024)} MiB limit"
+            )
+        chunks.append(chunk)
+    return "".join(chunks)
+
+
+def _stdin_is_tty(stdin: TextIO) -> bool:
+    try:
+        return stdin.isatty()
+    except AttributeError:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.prompt is not None:
+        return run_non_interactive(args)
     return run_tui(args)
 
 
