@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 import inspect
 from pathlib import Path
@@ -10,6 +11,7 @@ from predict_rlm.trace import extract_trace_from_exc
 from .agent.schema import FractalResult
 from .agent.service import FractalAgent, coerce_trace
 from .session import (
+    INTERRUPTED_ERROR,
     MAX_ITERATIONS_ERROR,
     FractalSession,
     SessionHistoryTurn,
@@ -88,6 +90,7 @@ class FractalRuntime:
         user_message: str,
         *,
         on_pending: Callable[[], Awaitable[None] | None] | None = None,
+        interrupt_requested: Callable[[], bool] | None = None,
     ) -> FractalResult:
         turn_id = self.session.add_user_message(user_message)
         self.session.save(self.workspace_path)
@@ -96,6 +99,15 @@ class FractalRuntime:
             if inspect.isawaitable(pending_result):
                 await pending_result
 
+        if interrupt_requested is not None and interrupt_requested():
+            self.session.add_agent_turn(
+                status="interrupted",
+                error=INTERRUPTED_ERROR,
+                turn_id=turn_id,
+            )
+            self.session.save(self.workspace_path)
+            raise asyncio.CancelledError(INTERRUPTED_ERROR)
+
         try:
             result = await self.agent.aforward(
                 workspace_path=self.workspace_path,
@@ -103,11 +115,35 @@ class FractalRuntime:
                 rendered_session_summary=self.session.summary(),
                 session_history=self.session.session_history_payload(),
             )
+        except asyncio.CancelledError as exc:
+            if interrupt_requested is None or not interrupt_requested():
+                raise
+            # Ctrl-C cancels the active turn. Persist it distinctly so the next
+            # prompt and future resumes know this was user-initiated, not a
+            # model/tool failure.
+            self.session.add_agent_turn(
+                status="interrupted",
+                error=INTERRUPTED_ERROR,
+                trace=coerce_trace(extract_trace_from_exc(exc)),
+                turn_id=turn_id,
+            )
+            self.session.save(self.workspace_path)
+            raise
         except Exception as exc:
+            if interrupt_requested is not None and interrupt_requested():
+                self.session.add_agent_turn(
+                    status="interrupted",
+                    error=INTERRUPTED_ERROR,
+                    trace=coerce_trace(extract_trace_from_exc(exc)),
+                    turn_id=turn_id,
+                )
+                self.session.save(self.workspace_path)
+                raise asyncio.CancelledError(INTERRUPTED_ERROR) from exc
             # Failed turns still need durable context for the next turn; the UI
             # can decide how loudly to surface the exception after it is saved.
-            self.session.add_agent_failure(
-                str(exc),
+            self.session.add_agent_turn(
+                status="failed",
+                error=str(exc),
                 trace=coerce_trace(extract_trace_from_exc(exc)),
                 turn_id=turn_id,
             )
@@ -118,17 +154,19 @@ class FractalRuntime:
         # loop exhausts its budget. Preserve that output, but do not mark the
         # turn as a normal success.
         if result.trace is not None and result.trace.status == "max_iterations":
-            self.session.add_agent_max_iterations(
-                result.response,
-                result.changed_files,
+            self.session.add_agent_turn(
+                status="max_iterations",
+                response=result.response,
+                changed_files=result.changed_files,
                 trace=result.trace,
                 turn_id=turn_id,
                 error=MAX_ITERATIONS_ERROR,
             )
         else:
-            self.session.add_agent_response(
-                result.response,
-                result.changed_files,
+            self.session.add_agent_turn(
+                status="succeeded",
+                response=result.response,
+                changed_files=result.changed_files,
                 trace=result.trace,
                 turn_id=turn_id,
             )

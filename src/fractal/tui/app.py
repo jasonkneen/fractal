@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import signal
 from typing import Protocol, TextIO
 
 from prompt_toolkit import PromptSession
@@ -35,6 +36,8 @@ SLASH_COMMANDS = {
     "/exit": "Exit Fractal",
     "/quit": "Exit Fractal",
 }
+RUNNING_STATUS = "[dim]running RLM... (Ctrl-C to interrupt)[/dim]"
+INTERRUPTING_STATUS = "[yellow]interrupting RLM...[/yellow] [dim](waiting for shutdown)[/dim]"
 MARKDOWN_STYLE_OVERRIDES = {
     # Rich defaults inline code to "cyan on black", which reads as a
     # highlight block inside Fractal's already framed response panel.
@@ -130,44 +133,110 @@ class TerminalFractalApp:
         self._rendered_turn_ids: set[str] = set()
         self._pending_turn_ids: set[str] = set()
         self._prompt_echo_turn_ids: set[str] = set()
+        self._sigint_mode = "prompt"
+        self._active_submit_task: asyncio.Task[FractalResult] | None = None
+        self._turn_interrupt_requested = False
+        self._active_status: object | None = None
 
     async def run(self) -> None:
-        self.render_header()
-        self.render_new_turns()
-
-        while True:
-            message = await self.read_message()
-            if message is None or message in {"/exit", "/quit"}:
-                return
-            if not message:
-                continue
-            if self.handle_slash_command(message):
-                continue
-
-            def mark_pending() -> None:
-                self.mark_latest_turn_as_prompt_echoed()
-
-            try:
-                status = self.console.status(
-                    "[dim]running RLM...[/dim]",
-                    spinner="dots",
-                )
-                status.start()
-                try:
-                    result = await self.runtime.submit(message, on_pending=mark_pending)
-                finally:
-                    status.stop()
-            except Exception:
-                self.console.print(Text("✗ failed", style="red"))
-                self.render_new_turns()
-                continue
-            if result.trace is not None and result.trace.status == "max_iterations":
-                self.console.print(Text("! max iterations", style="yellow"))
-            else:
-                self.console.print(Text("✓ complete"))
-            if result.trace is not None:
-                self.console.print(render_trace_summary(result.trace))
+        previous_sigint_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, self._handle_sigint)
+        try:
+            self.render_header()
             self.render_new_turns()
+
+            while True:
+                self._sigint_mode = "prompt"
+                self._active_submit_task = None
+                self._turn_interrupt_requested = False
+
+                message = await self.read_message()
+                if message is None or message in {"/exit", "/quit"}:
+                    return
+                if not message:
+                    continue
+                if self.handle_slash_command(message):
+                    self._sigint_mode = "prompt"
+                    continue
+
+                self._sigint_mode = "turn"
+                result = await self.run_turn(message)
+                if result is None:
+                    continue
+                if result.trace is not None and result.trace.status == "max_iterations":
+                    self.console.print(Text("! max iterations", style="yellow"))
+                else:
+                    self.console.print(Text("✓ complete"))
+                if result.trace is not None:
+                    self.console.print(render_trace_summary(result.trace))
+                self.render_new_turns()
+        finally:
+            signal.signal(signal.SIGINT, previous_sigint_handler)
+
+    async def run_turn(self, message: str) -> FractalResult | None:
+        def mark_pending() -> None:
+            self.mark_latest_turn_as_prompt_echoed()
+
+        status = self.console.status(RUNNING_STATUS, spinner="dots")
+        status.start()
+        self._active_status = status
+        status_running = True
+        if self._turn_interrupt_requested:
+            self._show_interrupting_status()
+
+        def stop_status() -> None:
+            nonlocal status_running
+            if status_running:
+                status.stop()
+                status_running = False
+
+        submit_task = asyncio.create_task(
+            self.runtime.submit(
+                message,
+                on_pending=mark_pending,
+                interrupt_requested=lambda: self._turn_interrupt_requested,
+            )
+        )
+        self._active_submit_task = submit_task
+        try:
+            result = await submit_task
+        except asyncio.CancelledError:
+            if not self._turn_interrupt_requested:
+                raise
+            stop_status()
+            self.render_new_turns()
+            return None
+        except Exception:
+            stop_status()
+            self.console.print(Text("✗ failed", style="red"))
+            self.render_new_turns()
+            return None
+        finally:
+            self._active_submit_task = None
+            self._active_status = None
+            self._sigint_mode = "prompt"
+            stop_status()
+        return result
+
+    def _handle_sigint(self, signum: int, frame: object) -> None:
+        if self._sigint_mode != "turn":
+            # A second Ctrl-C can arrive after the interrupted turn has already
+            # returned control to the prompt. Raising from the process signal
+            # handler escapes prompt_toolkit/asyncio and crashes the CLI.
+            return
+        self._turn_interrupt_requested = True
+        self._show_interrupting_status()
+        task = self._active_submit_task
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _show_interrupting_status(self) -> None:
+        status = self._active_status
+        if status is None:
+            return
+        update = getattr(status, "update", None)
+        if update is not None:
+            update(INTERRUPTING_STATUS)
 
     def render_header(self) -> None:
         self.console.print(
@@ -238,19 +307,26 @@ class TerminalFractalApp:
         if self.input_stream is None:
             try:
                 message = await self.prompt_session.prompt_async(
-                    HTML("<prompt>fractal</prompt><session>›</session> ")
+                    HTML("<prompt>fractal</prompt><session>›</session> "),
+                    handle_sigint=False,
                 )
             except (EOFError, KeyboardInterrupt):
                 self.console.print()
                 return None
-            return message.strip()
+            message = message.strip()
+            if _will_submit_turn(message):
+                self._sigint_mode = "turn"
+            return message
 
         try:
             message = await asyncio.to_thread(self._readline)
         except EOFError:
             self.console.print()
             return None
-        return message.strip()
+        message = message.strip()
+        if _will_submit_turn(message):
+            self._sigint_mode = "turn"
+        return message
 
     def _readline(self) -> str:
         assert self.input_stream is not None
@@ -334,7 +410,14 @@ def render_prompt_label() -> Text:
     return Text.assemble(("fractal", "bold cyan"), ("›", "bright_black"), " ")
 
 
-def render_agent_message(turn: SummaryTurn, *, pending: bool = False) -> Panel:
+def _will_submit_turn(message: str) -> bool:
+    if not message or message in {"/exit", "/quit"}:
+        return False
+    command, _, _ = message.partition(" ")
+    return command != "/resume"
+
+
+def render_agent_message(turn: SummaryTurn, *, pending: bool = False) -> object:
     body: str | Text | Markdown | Group
     style = "on #23262e"
     border_style = "white"
@@ -344,6 +427,8 @@ def render_agent_message(turn: SummaryTurn, *, pending: bool = False) -> Panel:
         body = turn.agent.error or "Turn failed."
         style = "on #2a1d22"
         border_style = "red"
+    elif turn.agent.status == "interrupted":
+        return Text(turn.agent.error or "Turn interrupted by user.", style="yellow")
     elif turn.agent.status == "max_iterations":
         # PredictRLM's fallback can contain useful work, but the agent did not
         # explicitly SUBMIT it. Make that state visible in scrollback.

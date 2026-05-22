@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from io import StringIO
 from pathlib import Path
+import signal
 
 import pytest
 from rich.console import Console
@@ -23,6 +24,8 @@ class FakeRuntime:
         fail: bool = False,
         include_trace: bool = False,
         max_iterations: bool = False,
+        interrupt: bool = False,
+        interrupt_count: int = 1,
     ) -> None:
         from fractal.session import FractalSession
 
@@ -33,6 +36,7 @@ class FakeRuntime:
         self.fail = fail
         self.include_trace = include_trace
         self.max_iterations = max_iterations
+        self.interrupt_count = interrupt_count if interrupt else 0
 
     @property
     def session_id(self) -> str:
@@ -57,25 +61,42 @@ class FakeRuntime:
             pending_result = on_pending()
             if pending_result is not None:
                 await pending_result
+        interrupt_requested = kwargs.get("interrupt_requested")
+        if interrupt_requested is not None and interrupt_requested():
+            self.session.add_agent_turn(status="interrupted", turn_id=turn_id)
+            raise asyncio.CancelledError
+        if len(self.submitted) <= self.interrupt_count:
+            signal.raise_signal(signal.SIGINT)
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                self.session.add_agent_turn(status="interrupted", turn_id=turn_id)
+                raise
         if self.fail:
-            self.session.add_agent_failure("model failed", turn_id=turn_id)
+            self.session.add_agent_turn(
+                status="failed",
+                error="model failed",
+                turn_id=turn_id,
+            )
             raise RuntimeError("model failed")
         response = self._response(user_message)
         trace = self._trace() if self.include_trace or self.max_iterations else None
         if self.max_iterations:
             from fractal.session import MAX_ITERATIONS_ERROR
 
-            self.session.add_agent_max_iterations(
-                response,
-                [],
+            self.session.add_agent_turn(
+                status="max_iterations",
+                response=response,
+                changed_files=[],
                 trace=trace,
                 turn_id=turn_id,
                 error=MAX_ITERATIONS_ERROR,
             )
         else:
-            self.session.add_agent_response(
-                response,
-                [],
+            self.session.add_agent_turn(
+                status="succeeded",
+                response=response,
+                changed_files=[],
                 trace=trace,
                 turn_id=turn_id,
             )
@@ -125,7 +146,7 @@ class FakePromptSession:
         self.messages = messages
         self.prompts: list[object] = []
 
-    async def prompt_async(self, prompt: object) -> str:
+    async def prompt_async(self, prompt: object, **kwargs: object) -> str:
         self.prompts.append(prompt)
         if not self.messages:
             raise EOFError
@@ -151,7 +172,12 @@ def test_terminal_tui_renders_summary_as_native_output(tmp_path: Path) -> None:
 
     runtime = FakeRuntime(tmp_path)
     turn_id = runtime.session.add_user_message("hello fractal")
-    runtime.session.add_agent_response("hello human", [], turn_id=turn_id)
+    runtime.session.add_agent_turn(
+        status="succeeded",
+        response="hello human",
+        changed_files=[],
+        turn_id=turn_id,
+    )
     console, output = capture_console()
 
     console.print(render_summary(runtime.session.summary_model))
@@ -175,9 +201,10 @@ def test_terminal_tui_renders_final_response_as_markdown(tmp_path: Path) -> None
 
     runtime = FakeRuntime(tmp_path)
     turn_id = runtime.session.add_user_message("format response")
-    runtime.session.add_agent_response(
-        "**Done**\n\n- updated `README.md`",
-        [],
+    runtime.session.add_agent_turn(
+        status="succeeded",
+        response="**Done**\n\n- updated `README.md`",
+        changed_files=[],
         turn_id=turn_id,
     )
     turn = runtime.session.turns[-1]
@@ -198,9 +225,10 @@ def test_terminal_tui_renders_max_iteration_response_as_incomplete(tmp_path: Pat
     turn_id = runtime.session.add_user_message("finish task")
     from fractal.session import MAX_ITERATIONS_ERROR
 
-    runtime.session.add_agent_max_iterations(
-        "fallback response",
-        [],
+    runtime.session.add_agent_turn(
+        status="max_iterations",
+        response="fallback response",
+        changed_files=[],
         turn_id=turn_id,
         error=MAX_ITERATIONS_ERROR,
     )
@@ -210,6 +238,23 @@ def test_terminal_tui_renders_max_iteration_response_as_incomplete(tmp_path: Pat
 
     assert panel.border_style == "yellow"
     assert isinstance(panel.renderable, Group)
+
+
+def test_terminal_tui_renders_interrupted_response(tmp_path: Path) -> None:
+    from rich.text import Text
+
+    from fractal.tui.app import render_agent_message
+
+    runtime = FakeRuntime(tmp_path)
+    turn_id = runtime.session.add_user_message("long task")
+    runtime.session.add_agent_turn(status="interrupted", turn_id=turn_id)
+    turn = runtime.session.turns[-1]
+
+    rendered = render_agent_message(turn)
+
+    assert isinstance(rendered, Text)
+    assert rendered.style == "yellow"
+    assert "interrupted" in str(rendered)
 
 
 def test_terminal_tui_renders_compact_trace_summary(tmp_path: Path) -> None:
@@ -281,6 +326,179 @@ def test_terminal_tui_failed_submit_renders_error_and_continues(tmp_path: Path) 
     assert text.count("fractal› ") == 2
 
 
+def test_terminal_tui_interrupted_submit_renders_and_continues(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(tmp_path, interrupt=True)
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO("stop\nnext\n/exit\n"),
+    )
+
+    asyncio.run(app.run())
+
+    text = output.getvalue()
+    assert runtime.submitted == ["stop", "next"]
+    assert "! turn interrupted" not in text
+    assert "Turn interrupted by user." in text
+    assert "response to next" in text
+    assert "✓ complete" in text
+    assert text.count("fractal› ") == 3
+
+
+def test_terminal_tui_handles_interrupt_before_submit_task_is_active(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO(""),
+    )
+
+    app._sigint_mode = "turn"
+    app._handle_sigint(signal.SIGINT, None)
+    result = asyncio.run(app.run_turn("early stop"))
+
+    text = output.getvalue()
+    assert result is None
+    assert runtime.submitted == ["early stop"]
+    assert runtime.session.turns[-1].agent is not None
+    assert runtime.session.turns[-1].agent.status == "interrupted"
+    assert "! turn interrupted" not in text
+    assert "Turn interrupted by user." in text
+
+
+def test_terminal_tui_run_turn_propagates_external_cancellation(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    class BlockingRuntime(FakeRuntime):
+        async def submit(self, user_message: str, **kwargs: object) -> object:
+            self.submitted.append(user_message)
+            self.session.add_user_message(user_message)
+            await asyncio.Event().wait()
+
+    runtime = BlockingRuntime(tmp_path)
+    console, _ = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO(""),
+    )
+
+    async def cancel_run_turn() -> None:
+        task = asyncio.create_task(app.run_turn("shutdown"))
+        for _ in range(10):
+            if runtime.submitted:
+                break
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_run_turn())
+
+    assert runtime.submitted == ["shutdown"]
+    assert runtime.session.turns[-1].agent is None
+    assert runtime.session.history[-1].status == "pending"
+
+
+def test_terminal_tui_sigint_updates_active_status_immediately(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+    from fractal.tui.app import INTERRUPTING_STATUS
+
+    class FakeStatus:
+        def __init__(self) -> None:
+            self.updates: list[str] = []
+
+        def update(self, value: str) -> None:
+            self.updates.append(value)
+
+    runtime = FakeRuntime(tmp_path)
+    app = TerminalFractalApp(
+        runtime,
+        input_stream=StringIO(""),
+    )
+    status = FakeStatus()
+
+    app._sigint_mode = "turn"
+    app._active_status = status
+    app._handle_sigint(signal.SIGINT, None)
+
+    assert app._turn_interrupt_requested is True
+    assert status.updates == [INTERRUPTING_STATUS]
+
+
+def test_terminal_tui_prompt_mode_sigint_does_not_escape_handler(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(tmp_path)
+    app = TerminalFractalApp(
+        runtime,
+        input_stream=StringIO(""),
+    )
+
+    app._sigint_mode = "prompt"
+    app._handle_sigint(signal.SIGINT, None)
+
+    assert app._turn_interrupt_requested is False
+
+
+def test_terminal_tui_two_interrupted_submits_do_not_exit(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(tmp_path, interrupt=True, interrupt_count=2)
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO("stop\nagain\nfinal\n/exit\n"),
+    )
+
+    asyncio.run(app.run())
+
+    text = output.getvalue()
+    assert runtime.submitted == ["stop", "again", "final"]
+    assert "! turn interrupted" not in text
+    assert text.count("Turn interrupted by user.") == 2
+    assert "response to final" in text
+    assert "✓ complete" in text
+    assert text.count("fractal› ") == 4
+
+
+def test_terminal_tui_late_prompt_sigint_after_interrupt_does_not_exit(
+    tmp_path: Path,
+) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    class LateSigintApp(TerminalFractalApp):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self.messages = ["stop", "again", "final", "/exit"]
+            self.injected_late_sigints = 0
+
+        async def read_message(self) -> str | None:
+            if len(runtime.submitted) in {1, 2} and self.injected_late_sigints < 2:
+                self.injected_late_sigints += 1
+                self._handle_sigint(signal.SIGINT, None)
+            return self.messages.pop(0)
+
+    runtime = FakeRuntime(tmp_path, interrupt=True, interrupt_count=2)
+    console, output = capture_console()
+    app = LateSigintApp(runtime, console=console)
+
+    asyncio.run(app.run())
+
+    text = output.getvalue()
+    assert runtime.submitted == ["stop", "again", "final"]
+    assert app.injected_late_sigints == 2
+    assert text.count("Turn interrupted by user.") == 2
+    assert "response to final" in text
+
+
 def test_terminal_tui_max_iterations_is_not_rendered_as_complete(tmp_path: Path) -> None:
     from fractal.tui import TerminalFractalApp
 
@@ -330,7 +548,12 @@ def test_terminal_tui_resume_command_switches_sessions(tmp_path: Path) -> None:
 
     existing = FractalSession(session_id="existing")
     turn_id = existing.add_user_message("prior request")
-    existing.add_agent_response("prior response", [], turn_id=turn_id)
+    existing.add_agent_turn(
+        status="succeeded",
+        response="prior response",
+        changed_files=[],
+        turn_id=turn_id,
+    )
     existing.save(tmp_path)
 
     runtime = FakeRuntime(tmp_path)

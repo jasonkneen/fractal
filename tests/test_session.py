@@ -26,9 +26,10 @@ def test_session_round_trip(tmp_path: Path) -> None:
         max_iterations=3,
         duration_ms=10,
     )
-    session.add_agent_response(
-        "updated",
-        ["README.md"],
+    session.add_agent_turn(
+        status="succeeded",
+        response="updated",
+        changed_files=["README.md"],
         trace=trace,
         turn_id=turn_id,
     )
@@ -122,8 +123,9 @@ def test_session_can_store_failed_turn(tmp_path: Path) -> None:
         max_iterations=3,
         duration_ms=10,
     )
-    session.add_agent_failure(
-        "pytest failed",
+    session.add_agent_turn(
+        status="failed",
+        error="pytest failed",
         trace=trace,
         turn_id=turn_id,
     )
@@ -154,9 +156,10 @@ def test_session_can_store_max_iteration_turn(tmp_path: Path) -> None:
     )
     from fractal.session import MAX_ITERATIONS_ERROR
 
-    session.add_agent_max_iterations(
-        "fallback answer",
-        ["README.md"],
+    session.add_agent_turn(
+        status="max_iterations",
+        response="fallback answer",
+        changed_files=["README.md"],
         trace=trace,
         turn_id=turn_id,
         error=MAX_ITERATIONS_ERROR,
@@ -172,6 +175,38 @@ def test_session_can_store_max_iteration_turn(tmp_path: Path) -> None:
     assert loaded.history[-1].status == "max_iterations"
     assert loaded.history[-1].trace == trace
     assert "Agent status: max_iterations" in loaded.summary()
+
+
+def test_session_can_store_interrupted_turn(tmp_path: Path) -> None:
+    from predict_rlm import RunTrace
+
+    from fractal.session import FractalSession, INTERRUPTED_ERROR
+
+    session = FractalSession()
+    turn_id = session.add_user_message("long task")
+    trace = RunTrace(
+        status="error",
+        model="test-model",
+        iterations=1,
+        max_iterations=3,
+        duration_ms=10,
+    )
+    session.add_agent_turn(
+        status="interrupted",
+        error=INTERRUPTED_ERROR,
+        trace=trace,
+        turn_id=turn_id,
+    )
+    session.save(tmp_path)
+
+    loaded = FractalSession.load(tmp_path, session_id=session.session_id)
+
+    assert loaded.turns[-1].agent is not None
+    assert loaded.turns[-1].agent.status == "interrupted"
+    assert loaded.turns[-1].agent.error == INTERRUPTED_ERROR
+    assert loaded.history[-1].status == "interrupted"
+    assert loaded.history[-1].trace == trace
+    assert "Agent status: interrupted" in loaded.summary()
 
 
 def test_load_rejects_mismatched_embedded_session_id(tmp_path: Path) -> None:

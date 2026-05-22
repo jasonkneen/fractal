@@ -74,6 +74,133 @@ def test_runtime_submit_persists_failure_before_reraising(tmp_path: Path) -> Non
     assert session.history[-1].error == "model failed"
 
 
+def test_runtime_submit_persists_interruption_before_reraising(tmp_path: Path) -> None:
+    from predict_rlm import RunTrace
+
+    from fractal.runtime import FractalRuntime
+    from fractal.session import FractalSession, INTERRUPTED_ERROR
+
+    trace = RunTrace(
+        status="error",
+        model="test-model",
+        iterations=1,
+        max_iterations=3,
+        duration_ms=10,
+    )
+
+    class SlowAgent:
+        async def aforward(self, **kwargs: object) -> object:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError as exc:
+                exc.trace = trace
+                raise
+
+    session = FractalSession()
+    runtime = FractalRuntime(
+        workspace_path=tmp_path,
+        session=session,
+        agent=SlowAgent(),
+    )
+
+    interrupt_requested = False
+
+    async def cancel_submit() -> None:
+        nonlocal interrupt_requested
+        task = asyncio.create_task(
+            runtime.submit(
+                "stop",
+                interrupt_requested=lambda: interrupt_requested,
+            )
+        )
+        await asyncio.sleep(0)
+        interrupt_requested = True
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_submit())
+
+    assert session.turns[-1].agent is not None
+    assert session.turns[-1].agent.status == "interrupted"
+    assert session.turns[-1].agent.error == INTERRUPTED_ERROR
+    assert session.history[-1].status == "interrupted"
+    assert session.history[-1].trace == trace
+
+
+def test_runtime_submit_propagates_external_cancellation(tmp_path: Path) -> None:
+    from fractal.runtime import FractalRuntime
+    from fractal.session import FractalSession
+
+    class SlowAgent:
+        async def aforward(self, **kwargs: object) -> object:
+            await asyncio.Event().wait()
+
+    session = FractalSession()
+    runtime = FractalRuntime(
+        workspace_path=tmp_path,
+        session=session,
+        agent=SlowAgent(),
+    )
+
+    async def cancel_submit() -> None:
+        task = asyncio.create_task(runtime.submit("shutdown"))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_submit())
+
+    assert session.turns[-1].agent is None
+    assert session.history[-1].status == "pending"
+
+
+def test_runtime_reclassifies_interrupt_shutdown_error(tmp_path: Path) -> None:
+    from predict_rlm import RunTrace
+
+    from fractal.runtime import FractalRuntime
+    from fractal.session import FractalSession, INTERRUPTED_ERROR
+
+    trace = RunTrace(
+        status="error",
+        model="test-model",
+        iterations=0,
+        max_iterations=3,
+        duration_ms=10,
+    )
+    interrupted = False
+
+    class InterruptedShutdownAgent:
+        async def aforward(self, **kwargs: object) -> object:
+            nonlocal interrupted
+            interrupted = True
+            exc = RuntimeError("Deno exited (code -2) during health check")
+            exc.trace = trace
+            raise exc
+
+    session = FractalSession()
+    runtime = FractalRuntime(
+        workspace_path=tmp_path,
+        session=session,
+        agent=InterruptedShutdownAgent(),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            runtime.submit(
+                "stop",
+                interrupt_requested=lambda: interrupted,
+            )
+        )
+
+    assert session.turns[-1].agent is not None
+    assert session.turns[-1].agent.status == "interrupted"
+    assert session.turns[-1].agent.error == INTERRUPTED_ERROR
+    assert session.history[-1].status == "interrupted"
+    assert session.history[-1].trace == trace
+
+
 def test_runtime_submit_persists_max_iterations_as_incomplete(tmp_path: Path) -> None:
     from predict_rlm import RunTrace
 
