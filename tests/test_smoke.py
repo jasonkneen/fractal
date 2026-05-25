@@ -75,6 +75,159 @@ def test_cli_parser_accepts_resume_session_id() -> None:
     assert args.resume == "session-123"
 
 
+def test_run_tui_shows_shutdown_status_and_closes_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import fractal.runtime as runtime_module
+    import fractal.tui as tui_module
+    import rich.console as rich_console
+    from fractal.cli import run_tui
+
+    events: list[str] = []
+
+    class FakeStatus:
+        def __enter__(self) -> None:
+            events.append("status_enter")
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            events.append("status_exit")
+
+    class FakeConsole:
+        def print(self, message: str, *, style: str | None = None) -> None:
+            events.append(f"print:{message}:{style}")
+
+        def status(self, message: str, *, spinner: str) -> FakeStatus:
+            events.append(f"status:{message}:{spinner}")
+            return FakeStatus()
+
+    class FakeRuntime:
+        def prewarm(self) -> None:
+            events.append("prewarm")
+
+        def close(self) -> None:
+            events.append("close")
+
+    class FakeFractalRuntime:
+        @classmethod
+        def create(cls, **kwargs: object) -> FakeRuntime:
+            events.append("create")
+            return FakeRuntime()
+
+    class FakeTerminalFractalApp:
+        def __init__(self, runtime: FakeRuntime, *, console: FakeConsole) -> None:
+            events.append("app")
+
+        async def run(self) -> None:
+            events.append("run")
+
+    monkeypatch.setattr(rich_console, "Console", FakeConsole)
+    monkeypatch.setattr(runtime_module, "FractalRuntime", FakeFractalRuntime)
+    monkeypatch.setattr(tui_module, "TerminalFractalApp", FakeTerminalFractalApp)
+
+    result = run_tui(
+        SimpleNamespace(
+            workspace=tmp_path,
+            include=[],
+            lm=None,
+            sub_lm=None,
+            max_iterations=1,
+            debug=False,
+            resume=None,
+        )
+    )
+
+    assert result == 0
+    assert events == [
+        "create",
+        "print:sandbox: starting:dim",
+        "status:[dim]starting sandbox...[/dim]:dots",
+        "status_enter",
+        "prewarm",
+        "status_exit",
+        "print:sandbox: ready:dim",
+        "app",
+        "run",
+        "status:[dim]shutting down sandbox... press Ctrl-C again to force exit[/dim]:dots",
+        "status_enter",
+        "close",
+        "status_exit",
+    ]
+
+
+def test_run_tui_allows_force_exit_during_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import fractal.runtime as runtime_module
+    import fractal.tui as tui_module
+    import rich.console as rich_console
+    from fractal.cli import run_tui
+
+    events: list[str] = []
+
+    class FakeStatus:
+        def __enter__(self) -> None:
+            events.append("status_enter")
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            events.append("status_exit")
+
+    class FakeConsole:
+        def print(self, message: str, *, style: str | None = None) -> None:
+            events.append(f"print:{message}:{style}")
+
+        def status(self, message: str, *, spinner: str) -> FakeStatus:
+            events.append(f"status:{message}:{spinner}")
+            return FakeStatus()
+
+    class FakeRuntime:
+        def prewarm(self) -> None:
+            events.append("prewarm")
+
+        def close(self) -> None:
+            events.append("close")
+            raise KeyboardInterrupt
+
+    class FakeFractalRuntime:
+        @classmethod
+        def create(cls, **kwargs: object) -> FakeRuntime:
+            events.append("create")
+            return FakeRuntime()
+
+    class FakeTerminalFractalApp:
+        def __init__(self, runtime: FakeRuntime, *, console: FakeConsole) -> None:
+            events.append("app")
+
+        async def run(self) -> None:
+            events.append("run")
+
+    monkeypatch.setattr(rich_console, "Console", FakeConsole)
+    monkeypatch.setattr(runtime_module, "FractalRuntime", FakeFractalRuntime)
+    monkeypatch.setattr(tui_module, "TerminalFractalApp", FakeTerminalFractalApp)
+
+    result = run_tui(
+        SimpleNamespace(
+            workspace=tmp_path,
+            include=[],
+            lm=None,
+            sub_lm=None,
+            max_iterations=1,
+            debug=False,
+            resume=None,
+        )
+    )
+
+    assert result == 130
+    assert events[-2:] == [
+        "status_exit",
+        (
+            "print:sandbox shutdown interrupted; a sandbox may still be running. "
+            "Run `sbx ls` and `sbx rm --force <name>` to clean it up.:yellow"
+        ),
+    ]
+
+
 def test_signature_fields() -> None:
     if not workspace_available():
         pytest.skip("predict_rlm.Workspace is not exported by the local branch yet")
@@ -190,6 +343,35 @@ def test_agent_aforward_constructs_rlm_and_workspace(
     assert result.changed_files == ["README.md"]
 
 
+def test_agent_aforward_uses_reusable_interpreter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    if not workspace_available():
+        pytest.skip("predict_rlm.Workspace is not exported by the local branch yet")
+
+    from fractal.agent import service
+
+    calls: dict[str, object] = {}
+    interpreter = MagicMock()
+
+    class FakePredictRLM:
+        def __init__(self, signature: object, **kwargs: object) -> None:
+            calls["kwargs"] = kwargs
+
+        async def acall(self, **kwargs: object) -> object:
+            return SimpleNamespace(response="done", changed_files=[])
+
+    monkeypatch.setattr(service, "PredictRLM", FakePredictRLM)
+
+    agent = service.FractalAgent(interpreter=interpreter)
+    asyncio.run(agent.aforward(tmp_path, "update the README"))
+
+    predictor_kwargs = calls["kwargs"]
+    assert isinstance(predictor_kwargs, dict)
+    assert predictor_kwargs["interpreter"] is interpreter
+    assert "sandbox_backend" not in predictor_kwargs
+
+
 def test_agent_aforward_omits_empty_included_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -216,6 +398,40 @@ def test_agent_aforward_omits_empty_included_paths(
     acall_kwargs = calls["acall_kwargs"]
     assert isinstance(acall_kwargs, dict)
     assert acall_kwargs["included_paths"] is None
+
+
+def test_build_direct_workspace_mounts_uses_absolute_paths(tmp_path: Path) -> None:
+    if not workspace_available():
+        pytest.skip("predict_rlm.Workspace is not exported by the local branch yet")
+
+    from fractal.agent.service import build_direct_workspace_mounts
+
+    included_path = tmp_path / "included"
+    included_path.mkdir()
+
+    mounts = build_direct_workspace_mounts(tmp_path, [included_path])
+
+    assert [
+        (mount.host_path, mount.sandbox_path)
+        for mount in mounts
+    ] == [
+        (str(tmp_path.resolve()), str(tmp_path.resolve())),
+        (str(included_path.resolve()), str(included_path.resolve())),
+    ]
+
+
+def test_agent_prewarm_prewarms_interpreter() -> None:
+    if not workspace_available():
+        pytest.skip("predict_rlm.Workspace is not exported by the local branch yet")
+
+    from fractal.agent.service import FractalAgent
+
+    interpreter = MagicMock()
+    agent = FractalAgent(interpreter=interpreter)
+
+    agent.prewarm()
+
+    interpreter.prewarm.assert_called_once_with()
 
 
 def test_predict_rlm_sees_absolute_workspace_paths(tmp_path: Path) -> None:

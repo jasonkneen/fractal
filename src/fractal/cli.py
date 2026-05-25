@@ -59,9 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_tui(args: argparse.Namespace) -> int:
+    from rich.console import Console
+
     from .runtime import FractalRuntime
     from .tui import TerminalFractalApp
 
+    console = Console()
     workspace = args.workspace.resolve()
     runtime = FractalRuntime.create(
         workspace_path=workspace,
@@ -73,7 +76,26 @@ def run_tui(args: argparse.Namespace) -> int:
         debug=args.debug,
         session_id=args.resume,
     )
-    asyncio.run(TerminalFractalApp(runtime).run())
+    try:
+        console.print("sandbox: starting", style="dim")
+        with console.status("[dim]starting sandbox...[/dim]", spinner="dots"):
+            runtime.prewarm()
+        console.print("sandbox: ready", style="dim")
+        asyncio.run(TerminalFractalApp(runtime, console=console).run())
+    finally:
+        try:
+            with console.status(
+                "[dim]shutting down sandbox... press Ctrl-C again to force exit[/dim]",
+                spinner="dots",
+            ):
+                runtime.close()
+        except KeyboardInterrupt:
+            console.print(
+                "sandbox shutdown interrupted; a sandbox may still be running. "
+                "Run `sbx ls` and `sbx rm --force <name>` to clean it up.",
+                style="yellow",
+            )
+            return 130
     return 0
 
 

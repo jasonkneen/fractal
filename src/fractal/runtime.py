@@ -9,7 +9,7 @@ from typing import Protocol
 from predict_rlm.trace import extract_trace_from_exc
 
 from .agent.schema import FractalResult
-from .agent.service import FractalAgent, coerce_trace
+from .agent.service import FractalAgent, coerce_trace, create_sbx_interpreter
 from .session import (
     INTERRUPTED_ERROR,
     MAX_ITERATIONS_ERROR,
@@ -29,6 +29,10 @@ class FractalAgentLike(Protocol):
         session_history: list[SessionHistoryTurn] | None = None,
         included_paths: list[Path] | None = None,
     ) -> FractalResult: ...
+
+    def close(self) -> None: ...
+
+    def prewarm(self) -> None: ...
 
 
 class FractalRuntime:
@@ -71,6 +75,7 @@ class FractalRuntime:
                 max_iterations=max_iterations,
                 verbose=verbose,
                 debug=debug,
+                interpreter=create_sbx_interpreter(workspace, included_paths),
             ),
         )
         if session_id is not None:
@@ -89,6 +94,16 @@ class FractalRuntime:
     @property
     def turns(self) -> list[SummaryTurn]:
         return self.session.turns
+
+    def close(self) -> None:
+        close = getattr(self.agent, "close", None)
+        if close is not None:
+            close()
+
+    def prewarm(self) -> None:
+        prewarm = getattr(self.agent, "prewarm", None)
+        if prewarm is not None:
+            prewarm()
 
     async def submit(
         self,

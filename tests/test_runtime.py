@@ -286,6 +286,98 @@ def test_runtime_create_and_resume_load_session_ids(tmp_path: Path) -> None:
     assert created.turns[-1].user.message == "prior work"
 
 
+def test_runtime_create_reuses_one_interpreter_until_close(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from fractal import runtime as runtime_module
+    from fractal.runtime import FractalRuntime
+
+    included_path = tmp_path / "included"
+    included_path.mkdir()
+    interpreter = object()
+    created_with: list[tuple[Path, list[Path]]] = []
+
+    def fake_create_sbx_interpreter(
+        workspace_path: str | Path,
+        included_paths: list[str | Path] | None = None,
+    ) -> object:
+        created_with.append((
+            Path(workspace_path),
+            [Path(path) for path in included_paths or []],
+        ))
+        return interpreter
+
+    monkeypatch.setattr(
+        runtime_module,
+        "create_sbx_interpreter",
+        fake_create_sbx_interpreter,
+    )
+
+    runtime = FractalRuntime.create(
+        workspace_path=tmp_path,
+        included_paths=[included_path],
+        lm=None,
+        sub_lm=None,
+        max_iterations=1,
+        verbose=False,
+        debug=False,
+    )
+
+    assert created_with == [(tmp_path.resolve(), [included_path])]
+    assert runtime.agent.interpreter is interpreter
+
+
+def test_runtime_close_closes_agent(tmp_path: Path) -> None:
+    from fractal.runtime import FractalRuntime
+    from fractal.session import FractalSession
+
+    closed: list[bool] = []
+
+    class FakeAgent:
+        async def aforward(self, **kwargs: object) -> object:
+            raise AssertionError("agent should not run")
+
+        def close(self) -> None:
+            closed.append(True)
+
+    runtime = FractalRuntime(
+        workspace_path=tmp_path,
+        session=FractalSession(),
+        agent=FakeAgent(),
+    )
+
+    runtime.close()
+
+    assert closed == [True]
+
+
+def test_runtime_prewarm_prewarms_agent(tmp_path: Path) -> None:
+    from fractal.runtime import FractalRuntime
+    from fractal.session import FractalSession
+
+    prewarmed: list[bool] = []
+
+    class FakeAgent:
+        async def aforward(self, **kwargs: object) -> object:
+            raise AssertionError("agent should not run")
+
+        def close(self) -> None:
+            pass
+
+        def prewarm(self) -> None:
+            prewarmed.append(True)
+
+    runtime = FractalRuntime(
+        workspace_path=tmp_path,
+        session=FractalSession(),
+        agent=FakeAgent(),
+    )
+
+    runtime.prewarm()
+
+    assert prewarmed == [True]
+
+
 def test_runtime_resume_requires_existing_session(tmp_path: Path) -> None:
     from fractal.runtime import FractalRuntime
     from fractal.session import FractalSession

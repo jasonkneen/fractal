@@ -5,6 +5,8 @@ from typing import Any
 
 import dspy
 from predict_rlm import PredictRLM, RunTrace, Workspace, WorkspaceMode
+from predict_rlm.interpreters import PredictRLMInterpreter, SbxInterpreter
+from predict_rlm.workspace import DirectWorkspaceMount
 
 from .schema import FractalResult
 from .signature import build_edit_workspace_signature
@@ -22,12 +24,14 @@ class FractalAgent(dspy.Module):
         max_iterations: int = 30,
         verbose: bool = True,
         debug: bool = False,
+        interpreter: PredictRLMInterpreter | None = None,
     ) -> None:
         self.lm = lm
         self.sub_lm = sub_lm
         self.max_iterations = max_iterations
         self.verbose = verbose
         self.debug = debug
+        self.interpreter = interpreter
 
     async def aforward(
         self,
@@ -52,16 +56,20 @@ class FractalAgent(dspy.Module):
         ]
 
         signature = build_edit_workspace_signature(rendered_session_summary)
-        predictor = PredictRLM(
-            signature,
-            lm=self.lm,
-            sub_lm=self.sub_lm,
-            skills=[filesystem_coding_skill],
-            max_iterations=self.max_iterations,
-            verbose=self.verbose,
-            debug=self.debug,
-            sandbox_backend="sbx",
-        )
+        predictor_kwargs: dict[str, Any] = {
+            "lm": self.lm,
+            "sub_lm": self.sub_lm,
+            "skills": [filesystem_coding_skill],
+            "max_iterations": self.max_iterations,
+            "verbose": self.verbose,
+            "debug": self.debug,
+        }
+        if self.interpreter is None:
+            predictor_kwargs["sandbox_backend"] = "sbx"
+        else:
+            predictor_kwargs["interpreter"] = self.interpreter
+
+        predictor = PredictRLM(signature, **predictor_kwargs)
         result = await predictor.acall(
             workspace=workspace,
             included_paths=included_workspaces or None,
@@ -69,6 +77,42 @@ class FractalAgent(dspy.Module):
             session_history=session_history or [],
         )
         return _coerce_result(result)
+
+    def close(self) -> None:
+        if self.interpreter is not None:
+            self.interpreter.shutdown()
+
+    def prewarm(self) -> None:
+        if self.interpreter is not None:
+            prewarm = getattr(self.interpreter, "prewarm", None)
+            if prewarm is not None:
+                prewarm()
+
+
+def create_sbx_interpreter(
+    workspace_path: str | Path,
+    included_paths: list[str | Path] | None = None,
+) -> SbxInterpreter:
+    return SbxInterpreter(
+        direct_workspace_mounts=build_direct_workspace_mounts(
+            workspace_path,
+            included_paths,
+        )
+    )
+
+
+def build_direct_workspace_mounts(
+    workspace_path: str | Path,
+    included_paths: list[str | Path] | None = None,
+) -> list[DirectWorkspaceMount]:
+    paths = [Path(workspace_path), *[Path(path) for path in included_paths or []]]
+    return [
+        DirectWorkspaceMount(
+            host_path=str(path.resolve()),
+            sandbox_path=str(path.resolve()),
+        )
+        for path in paths
+    ]
 
 
 def _coerce_result(prediction: Any) -> FractalResult:
