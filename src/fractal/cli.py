@@ -77,10 +77,8 @@ def run_tui(args: argparse.Namespace) -> int:
         session_id=args.resume,
     )
     try:
-        console.print("sandbox: starting", style="dim")
         with console.status("[dim]starting sandbox...[/dim]", spinner="dots"):
             runtime.prewarm()
-        console.print("sandbox: ready", style="dim")
         asyncio.run(TerminalFractalApp(runtime, console=console).run())
     finally:
         try:

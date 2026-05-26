@@ -140,12 +140,10 @@ def test_run_tui_shows_shutdown_status_and_closes_runtime(
     assert result == 0
     assert events == [
         "create",
-        "print:sandbox: starting:dim",
         "status:[dim]starting sandbox...[/dim]:dots",
         "status_enter",
         "prewarm",
         "status_exit",
-        "print:sandbox: ready:dim",
         "app",
         "run",
         "status:[dim]shutting down sandbox... press Ctrl-C again to force exit[/dim]:dots",
