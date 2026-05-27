@@ -50,7 +50,72 @@ def test_runtime_submit_persists_success_and_exposes_pending_state(tmp_path: Pat
     assert calls[0]["included_paths"] == [included_path.resolve()]
     assert calls[0]["user_message"] == "update docs"
     assert "update docs" in str(calls[0]["rendered_session_summary"])
+    assert callable(calls[0]["on_runtime_event"])
     assert session.history[-1].status == "succeeded"
+
+
+def test_runtime_submit_persists_runtime_event_facts(tmp_path: Path) -> None:
+    from fractal.agent.schema import FractalResult
+    from fractal.runtime import FractalRuntime
+    from fractal.session import FractalSession
+
+    surfaced: list[str] = []
+
+    class EventAgent:
+        async def aforward(self, **kwargs: object) -> FractalResult:
+            on_runtime_event = kwargs["on_runtime_event"]
+            assert callable(on_runtime_event)
+            on_runtime_event({
+                "target": "builtins.open",
+                "phase": "before",
+                "args": ["README.md", "r"],
+            })
+            on_runtime_event({
+                "target": "builtins.open",
+                "phase": "after",
+                "args": ["README.md", "r"],
+            })
+            on_runtime_event({
+                "target": "pathlib.Path.write_text",
+                "phase": "before",
+                "args": ["src/app.py", "updated"],
+            })
+            on_runtime_event({
+                "target": "pathlib.Path.write_text",
+                "phase": "after",
+                "args": ["src/app.py", "updated"],
+            })
+            on_runtime_event({
+                "target": "subprocess.run",
+                "phase": "before",
+                "args": [["uv", "run", "pytest"]],
+            })
+            return FractalResult(response="done")
+
+    session = FractalSession()
+    runtime = FractalRuntime(
+        workspace_path=tmp_path,
+        session=session,
+        agent=EventAgent(),
+    )
+
+    result = asyncio.run(
+        runtime.submit(
+            "update docs",
+            on_runtime_event=lambda event: surfaced.append(event.message),
+        )
+    )
+
+    assert result.changed_files == ["src/app.py"]
+    assert surfaced == [
+        "opening README.md",
+        "editing src/app.py",
+        "running uv run pytest",
+    ]
+    assert session.turns[-1].agent is not None
+    assert session.turns[-1].agent.files_read == ["README.md"]
+    assert session.turns[-1].agent.files_modified == ["src/app.py"]
+    assert session.turns[-1].agent.commands_run == ["uv run pytest"]
 
 
 def test_runtime_submit_persists_failure_before_reraising(tmp_path: Path) -> None:

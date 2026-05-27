@@ -35,6 +35,7 @@ class AgentTurn(BaseModel):
     response: str = ""
     files_read: list[str] = Field(default_factory=list)
     files_modified: list[str] = Field(default_factory=list)
+    commands_run: list[str] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -196,6 +197,8 @@ class FractalSession:
         status: Literal["succeeded", "failed", "max_iterations", "interrupted"],
         response: str = "",
         changed_files: list[str] | None = None,
+        files_read: list[str] | None = None,
+        commands_run: list[str] | None = None,
         error: str | None = None,
         trace: RunTrace | None = None,
         turn_id: str | None = None,
@@ -208,7 +211,9 @@ class FractalSession:
         summary_turn.agent = AgentTurn(
             status=status,
             response=response,
+            files_read=_require_string_list(files_read, "files_read"),
             files_modified=_require_string_list(changed_files, "changed_files"),
+            commands_run=_require_string_list(commands_run, "commands_run"),
             error=error,
         )
         history_turn = self._find_history_turn(turn_id or summary_turn.turn_id)
@@ -261,6 +266,8 @@ def render_session_summary(summary: SessionSummary) -> str:
             lines.append(f"Files read: {', '.join(turn.agent.files_read)}")
         if turn.agent.files_modified:
             lines.append(f"Files modified: {', '.join(turn.agent.files_modified)}")
+        if turn.agent.commands_run:
+            lines.append(f"Commands run: {', '.join(turn.agent.commands_run)}")
         if turn.agent.error:
             lines.append(f"Error: {turn.agent.error}")
     return "\n".join(lines)

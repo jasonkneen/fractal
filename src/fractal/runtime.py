@@ -11,6 +11,7 @@ from predict_rlm.trace import extract_trace_from_exc
 
 from .agent.schema import FractalResult
 from .agent.service import FractalAgent, create_sbx_interpreter
+from .events import FractalRuntimeEvent, RuntimeEventTracker
 from .session import (
     INTERRUPTED_ERROR,
     MAX_ITERATIONS_ERROR,
@@ -29,6 +30,7 @@ class FractalAgentLike(Protocol):
         rendered_session_summary: str = "",
         session_history: list[SessionHistoryTurn] | None = None,
         included_paths: list[Path] | None = None,
+        on_runtime_event: Callable[[object], object] | None = None,
     ) -> FractalResult: ...
 
     def close(self) -> None: ...
@@ -107,8 +109,20 @@ class FractalRuntime:
         user_message: str,
         *,
         on_pending: Callable[[], Awaitable[None] | None] | None = None,
+        on_runtime_event: Callable[[FractalRuntimeEvent], object] | None = None,
         interrupt_requested: Callable[[], bool] | None = None,
     ) -> FractalResult:
+        runtime_events = RuntimeEventTracker()
+
+        def observe_runtime_event(raw_event: object) -> None:
+            event = runtime_events.observe(raw_event)
+            if event is None or on_runtime_event is None:
+                return
+            try:
+                on_runtime_event(event)
+            except Exception:
+                pass
+
         turn_id = self.session.add_user_message(user_message)
         self.session.save(self.workspace_path)
         if on_pending is not None:
@@ -120,6 +134,9 @@ class FractalRuntime:
             self.session.add_agent_turn(
                 status="interrupted",
                 error=INTERRUPTED_ERROR,
+                changed_files=runtime_events.files_modified,
+                files_read=runtime_events.files_read,
+                commands_run=runtime_events.commands_run,
                 turn_id=turn_id,
             )
             self.session.save(self.workspace_path)
@@ -132,6 +149,7 @@ class FractalRuntime:
                 rendered_session_summary=self.session.summary(),
                 session_history=self.session.session_history_payload(),
                 included_paths=self.included_paths,
+                on_runtime_event=observe_runtime_event,
             )
         except asyncio.CancelledError as exc:
             if interrupt_requested is None or not interrupt_requested():
@@ -143,6 +161,9 @@ class FractalRuntime:
                 status="interrupted",
                 error=INTERRUPTED_ERROR,
                 trace=_extract_run_trace(exc),
+                changed_files=runtime_events.files_modified,
+                files_read=runtime_events.files_read,
+                commands_run=runtime_events.commands_run,
                 turn_id=turn_id,
             )
             self.session.save(self.workspace_path)
@@ -153,6 +174,9 @@ class FractalRuntime:
                     status="interrupted",
                     error=INTERRUPTED_ERROR,
                     trace=_extract_run_trace(exc),
+                    changed_files=runtime_events.files_modified,
+                    files_read=runtime_events.files_read,
+                    commands_run=runtime_events.commands_run,
                     turn_id=turn_id,
                 )
                 self.session.save(self.workspace_path)
@@ -163,11 +187,18 @@ class FractalRuntime:
                 status="failed",
                 error=str(exc),
                 trace=_extract_run_trace(exc),
+                changed_files=runtime_events.files_modified,
+                files_read=runtime_events.files_read,
+                commands_run=runtime_events.commands_run,
                 turn_id=turn_id,
             )
             self.session.save(self.workspace_path)
             raise
 
+        result.changed_files = _merge_unique(
+            result.changed_files,
+            runtime_events.files_modified,
+        )
         # PredictRLM returns fallback output, not an exception, when the REPL
         # loop exhausts its budget. Preserve that output, but do not mark the
         # turn as a normal success.
@@ -176,6 +207,8 @@ class FractalRuntime:
                 status="max_iterations",
                 response=result.response,
                 changed_files=result.changed_files,
+                files_read=runtime_events.files_read,
+                commands_run=runtime_events.commands_run,
                 trace=result.trace,
                 turn_id=turn_id,
                 error=MAX_ITERATIONS_ERROR,
@@ -185,6 +218,8 @@ class FractalRuntime:
                 status="succeeded",
                 response=result.response,
                 changed_files=result.changed_files,
+                files_read=runtime_events.files_read,
+                commands_run=runtime_events.commands_run,
                 trace=result.trace,
                 turn_id=turn_id,
             )
@@ -199,3 +234,11 @@ def _extract_run_trace(exc: BaseException) -> RunTrace | None:
     raise TypeError(
         f"PredictRLM exception trace must be RunTrace, not {type(trace).__name__}."
     )
+
+
+def _merge_unique(first: list[str], second: list[str]) -> list[str]:
+    merged = list(first)
+    for value in second:
+        if value not in merged:
+            merged.append(value)
+    return merged

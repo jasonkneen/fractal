@@ -29,7 +29,9 @@ def test_session_round_trip(tmp_path: Path) -> None:
     session.add_agent_turn(
         status="succeeded",
         response="updated",
+        files_read=["src/app.py"],
         changed_files=["README.md"],
+        commands_run=["uv run pytest"],
         trace=trace,
         turn_id=turn_id,
     )
@@ -48,8 +50,12 @@ def test_session_round_trip(tmp_path: Path) -> None:
     assert loaded.turns[-1].user.message == "change the README"
     assert loaded.turns[-1].agent is not None
     assert loaded.turns[-1].agent.response == "updated"
+    assert loaded.turns[-1].agent.files_read == ["src/app.py"]
     assert loaded.turns[-1].agent.files_modified == ["README.md"]
+    assert loaded.turns[-1].agent.commands_run == ["uv run pytest"]
     assert loaded.history[-1].trace == trace
+    assert "Files read: src/app.py" in loaded.summary()
+    assert "Commands run: uv run pytest" in loaded.summary()
 
 
 def test_load_without_session_id_starts_new_session(tmp_path: Path) -> None:

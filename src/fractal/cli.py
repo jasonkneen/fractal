@@ -118,6 +118,7 @@ def run_non_interactive(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
+    from .events import FractalRuntimeEvent
     from .runtime import FractalRuntime
 
     stdin = stdin or sys.stdin
@@ -151,8 +152,17 @@ def run_non_interactive(
         print(f"fractal: session {runtime.session_id}", file=stderr)
         print("fractal: running RLM...", file=stderr)
 
+    def print_runtime_event(event: FractalRuntimeEvent) -> None:
+        if not args.quiet:
+            print(f"fractal: {event.message}", file=stderr)
+
     try:
-        result = asyncio.run(runtime.submit(message))
+        result = asyncio.run(
+            runtime.submit(
+                message,
+                on_runtime_event=print_runtime_event if not args.quiet else None,
+            )
+        )
     except KeyboardInterrupt:
         print("fractal: interrupted", file=stderr)
         return 130

@@ -132,8 +132,11 @@ def test_run_non_interactive_prints_response_and_status(
         workspace_path = tmp_path
         session_id = "session-123"
 
-        async def submit(self, message: str) -> FractalResult:
+        async def submit(self, message: str, **kwargs: object) -> FractalResult:
             calls["message"] = message
+            on_runtime_event = kwargs.get("on_runtime_event")
+            if callable(on_runtime_event):
+                on_runtime_event(SimpleNamespace(message="opening README.md"))
             return FractalResult(response="done", changed_files=["README.md"])
 
     def fake_create(**kwargs: object) -> FakeRuntime:
@@ -163,6 +166,7 @@ def test_run_non_interactive_prints_response_and_status(
         "\n</Fractal stdin context>"
     )
     assert "fractal: session session-123" in stderr.getvalue()
+    assert "fractal: opening README.md" in stderr.getvalue()
     assert "fractal: changed files README.md" in stderr.getvalue()
     create_kwargs = calls["create_kwargs"]
     assert isinstance(create_kwargs, dict)
@@ -183,7 +187,7 @@ def test_run_non_interactive_reads_dash_prompt_from_stdin(
         workspace_path = tmp_path
         session_id = "session-123"
 
-        async def submit(self, message: str) -> FractalResult:
+        async def submit(self, message: str, **kwargs: object) -> FractalResult:
             calls["message"] = message
             return FractalResult(response="done")
 
@@ -226,7 +230,7 @@ def test_run_non_interactive_returns_distinct_code_for_max_iterations(
         workspace_path = tmp_path
         session_id = "session-123"
 
-        async def submit(self, message: str) -> FractalResult:
+        async def submit(self, message: str, **kwargs: object) -> FractalResult:
             return FractalResult(response="partial", trace=trace)
 
     monkeypatch.setattr(
@@ -463,6 +467,7 @@ def test_agent_aforward_constructs_rlm_and_workspace(
             )
 
     monkeypatch.setattr(service, "PredictRLM", FakePredictRLM)
+    monkeypatch.setattr(service, "build_predict_runtime_hooks", lambda: [])
 
     history_turn = SessionHistoryTurn(
         turn_id="turn-1",
@@ -518,6 +523,44 @@ def test_agent_aforward_constructs_rlm_and_workspace(
     assert acall_kwargs["user_message"] == "update the README"
     assert acall_kwargs["session_history"] == [history_turn]
     assert result.changed_files == ["README.md"]
+
+
+def test_agent_aforward_passes_runtime_hooks_when_available(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    if not workspace_available():
+        pytest.skip("predict_rlm.Workspace is not exported by the local branch yet")
+
+    from fractal.agent import service
+
+    calls: dict[str, object] = {}
+
+    class FakePredictRLM:
+        def __init__(self, signature: object, **kwargs: object) -> None:
+            calls["kwargs"] = kwargs
+
+        async def acall(self, **kwargs: object) -> object:
+            return SimpleNamespace(response="done", changed_files=[], trace=None)
+
+    def on_runtime_event(event: object) -> None:
+        calls["event"] = event
+
+    monkeypatch.setattr(service, "PredictRLM", FakePredictRLM)
+    monkeypatch.setattr(service, "build_predict_runtime_hooks", lambda: ["hook"])
+
+    agent = service.FractalAgent(max_iterations=7, verbose=False, debug=True)
+    asyncio.run(
+        agent.aforward(
+            tmp_path,
+            "update the README",
+            on_runtime_event=on_runtime_event,
+        )
+    )
+
+    predictor_kwargs = calls["kwargs"]
+    assert isinstance(predictor_kwargs, dict)
+    assert predictor_kwargs["runtime_hooks"] == ["hook"]
+    assert predictor_kwargs["on_runtime_hook_event"] is on_runtime_event
 
 
 def test_agent_aforward_uses_reusable_interpreter(

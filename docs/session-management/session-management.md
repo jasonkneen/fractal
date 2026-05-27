@@ -20,8 +20,9 @@ the ordered user and agent turns from the session:
 - user message
 - agent status
 - agent response
-- files read, when reliable read tracking exists
+- files read from runtime hook events, when available
 - files modified
+- commands run from runtime hook events, when available
 - error, when the turn failed
 
 For each Fractal turn, the summary is rendered into the dynamic PredictRLM
@@ -52,8 +53,8 @@ then marks both records as failed.
 
 ## Known Limits
 
-- File reads are not tracked reliably yet, so `files_read` is reserved and may
-  be empty.
+- File reads and commands are tracked only when the active PredictRLM backend
+  supports runtime hook events.
 - History is bounded and passed directly as structured data for now.
 - PredictRLM does not yet have a first-class prompt-only context field separate
   from REPL variables, so Fractal uses dynamic signature instructions for

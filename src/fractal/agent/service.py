@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -11,6 +12,7 @@ from predict_rlm.workspace import DirectWorkspaceMount
 from .schema import FractalResult
 from .signature import build_edit_workspace_signature
 from .skills import filesystem_coding_skill
+from ..events import build_predict_runtime_hooks
 from ..session import SessionHistoryTurn
 
 
@@ -44,6 +46,7 @@ class FractalAgent(dspy.Module):
         rendered_session_summary: str = "",
         session_history: list[SessionHistoryTurn] | None = None,
         included_paths: list[str | Path] | None = None,
+        on_runtime_event: Callable[[object], object] | None = None,
     ) -> FractalResult:
         workspace = Workspace(
             path=str(Path(workspace_path).resolve()),
@@ -72,6 +75,11 @@ class FractalAgent(dspy.Module):
             predictor_kwargs["sandbox_backend"] = "sbx"
         else:
             predictor_kwargs["interpreter"] = self.interpreter
+        runtime_hooks = build_predict_runtime_hooks()
+        if runtime_hooks:
+            predictor_kwargs["runtime_hooks"] = runtime_hooks
+            if on_runtime_event is not None:
+                predictor_kwargs["on_runtime_hook_event"] = on_runtime_event
 
         predictor = PredictRLM(signature, **predictor_kwargs)
         result = cast(

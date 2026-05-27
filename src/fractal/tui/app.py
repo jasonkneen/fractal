@@ -21,6 +21,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from fractal.agent.schema import FractalResult
+from fractal.events import FractalRuntimeEvent
 from fractal.session import SessionSummary, SummaryTurn
 from predict_rlm import RunTrace
 from predict_rlm.trace import IterationStep
@@ -39,6 +40,11 @@ SLASH_COMMANDS = {
 }
 RUNNING_STATUS = "[dim]running RLM... (Ctrl-C to interrupt)[/dim]"
 INTERRUPTING_STATUS = "[yellow]interrupting RLM...[/yellow] [dim](waiting for shutdown)[/dim]"
+RUNTIME_EVENT_STYLES = {
+    "file_read": "cyan",
+    "file_write": "yellow",
+    "command": "magenta",
+}
 MARKDOWN_STYLE_OVERRIDES = {
     # Rich defaults inline code to "cyan on black", which reads as a
     # highlight block inside Fractal's already framed response panel.
@@ -178,6 +184,11 @@ class TerminalFractalApp:
         def mark_pending() -> None:
             self.mark_latest_turn_as_prompt_echoed()
 
+        loop = asyncio.get_running_loop()
+
+        def show_runtime_event(event: FractalRuntimeEvent) -> None:
+            loop.call_soon_threadsafe(self._show_runtime_event_status, event)
+
         status = self.console.status(RUNNING_STATUS, spinner="dots")
         status.start()
         self._active_status = status
@@ -195,6 +206,7 @@ class TerminalFractalApp:
             self.runtime.submit(
                 message,
                 on_pending=mark_pending,
+                on_runtime_event=show_runtime_event,
                 interrupt_requested=lambda: self._turn_interrupt_requested,
             )
         )
@@ -236,6 +248,11 @@ class TerminalFractalApp:
         if status is None:
             return
         status.update(INTERRUPTING_STATUS)
+
+    def _show_runtime_event_status(self, event: FractalRuntimeEvent) -> None:
+        if self._turn_interrupt_requested:
+            return
+        self.console.print(render_runtime_event_log(event))
 
     def render_header(self) -> None:
         self.console.print(
@@ -397,6 +414,15 @@ def render_reasoning(reasoning: str) -> Padding:
         Text(reasoning, style="dim italic"),
     )
     return Padding(table, (0, 0, 0, 2))
+
+
+def render_runtime_event_log(event: FractalRuntimeEvent) -> Text:
+    style = RUNTIME_EVENT_STYLES.get(event.kind, "cyan")
+    text = Text.assemble(
+        ("  ", "dim"),
+        (event.message, style),
+    )
+    return text
 
 
 def render_user_message(message: str) -> Group:

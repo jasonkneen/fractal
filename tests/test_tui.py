@@ -449,6 +449,56 @@ def test_terminal_tui_sigint_updates_active_status_immediately(tmp_path: Path) -
     assert status.updates == [INTERRUPTING_STATUS]
 
 
+def test_terminal_tui_runtime_event_updates_active_status(tmp_path: Path) -> None:
+    from fractal.events import FractalRuntimeEvent
+    from fractal.tui import TerminalFractalApp
+    from fractal.tui.app import render_runtime_event_log
+
+    class FakeConsole:
+        def __init__(self) -> None:
+            self.prints: list[object] = []
+
+        def print(self, value: object = "", **kwargs: object) -> None:
+            self.prints.append(value)
+
+    runtime = FakeRuntime(tmp_path)
+    console = FakeConsole()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO(""),
+    )
+
+    app._show_runtime_event_status(
+        FractalRuntimeEvent(
+            kind="file_read",
+            target="builtins.open",
+            phase="before",
+            message="opening [README].md",
+            path="[README].md",
+        )
+    )
+
+    assert [str(item) for item in console.prints] == [
+        "  opening [README].md"
+    ]
+    assert console.prints[0].spans[0].style == "dim"
+    assert console.prints[0].spans[1].style == "cyan"
+
+    command = render_runtime_event_log(
+        FractalRuntimeEvent(
+            kind="command",
+            target="subprocess.run",
+            phase="before",
+            message="running uv run pytest",
+            command="uv run pytest",
+        )
+    )
+
+    assert str(command) == "  running uv run pytest"
+    assert command.spans[1].style == "magenta"
+
+
 def test_terminal_tui_prompt_mode_sigint_does_not_escape_handler(tmp_path: Path) -> None:
     from fractal.tui import TerminalFractalApp
 
