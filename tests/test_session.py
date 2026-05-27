@@ -209,6 +209,34 @@ def test_session_can_store_interrupted_turn(tmp_path: Path) -> None:
     assert "Agent status: interrupted" in loaded.summary()
 
 
+def test_session_requires_user_turn_before_agent_turn() -> None:
+    from fractal.session import FractalSession
+
+    session = FractalSession()
+
+    with pytest.raises(ValueError, match="before a user turn"):
+        session.add_agent_turn(status="succeeded")
+
+    session.add_user_message("hello")
+
+    with pytest.raises(ValueError, match="missing"):
+        session.add_agent_turn(status="succeeded", turn_id="missing")
+
+
+def test_session_rejects_non_list_changed_files() -> None:
+    from fractal.session import FractalSession
+
+    session = FractalSession()
+    turn_id = session.add_user_message("change docs")
+
+    with pytest.raises(TypeError, match="changed_files"):
+        session.add_agent_turn(
+            status="succeeded",
+            changed_files="README.md",
+            turn_id=turn_id,
+        )
+
+
 def test_load_rejects_mismatched_embedded_session_id(tmp_path: Path) -> None:
     from fractal.session import FractalSession, session_path
 

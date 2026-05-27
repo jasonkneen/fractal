@@ -15,6 +15,7 @@ from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.rule import Rule
+from rich.status import Status
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
@@ -22,6 +23,7 @@ from rich.theme import Theme
 from fractal.agent.schema import FractalResult
 from fractal.session import SessionSummary, SummaryTurn
 from predict_rlm import RunTrace
+from predict_rlm.trace import IterationStep
 
 
 PROMPT_STYLE = Style.from_dict(
@@ -135,7 +137,7 @@ class TerminalFractalApp:
         self._sigint_mode = "prompt"
         self._active_submit_task: asyncio.Task[FractalResult] | None = None
         self._turn_interrupt_requested = False
-        self._active_status: object | None = None
+        self._active_status: Status | None = None
 
     async def run(self) -> None:
         previous_sigint_handler = signal.getsignal(signal.SIGINT)
@@ -233,9 +235,7 @@ class TerminalFractalApp:
         status = self._active_status
         if status is None:
             return
-        update = getattr(status, "update", None)
-        if update is not None:
-            update(INTERRUPTING_STATUS)
+        status.update(INTERRUPTING_STATUS)
 
     def render_header(self) -> None:
         self.console.print(
@@ -360,14 +360,12 @@ def render_trace_summary(trace: RunTrace) -> Group:
     return Group(*rendered)
 
 
-def render_trace_step(trace: RunTrace, step: object) -> Group:
-    code = str(getattr(step, "code", "") or "")
-    output = str(
-        getattr(step, "untruncated_output", None) or getattr(step, "output", "") or ""
-    )
-    reasoning = str(getattr(step, "reasoning", "") or "").strip()
-    iteration = int(getattr(step, "iteration", len(trace.steps)))
-    status = "error" if bool(getattr(step, "error", False)) else "ok"
+def render_trace_step(trace: RunTrace, step: IterationStep) -> Group:
+    code = step.code
+    output = step.untruncated_output or step.output
+    reasoning = step.reasoning.strip()
+    iteration = step.iteration
+    status = "error" if step.error else "ok"
 
     text = Text()
     text.append(

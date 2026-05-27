@@ -456,7 +456,11 @@ def test_agent_aforward_constructs_rlm_and_workspace(
         async def acall(self, **kwargs: object) -> object:
             calls["acall_count"] = int(calls.get("acall_count", 0)) + 1
             calls["acall_kwargs"] = kwargs
-            return SimpleNamespace(response="done", changed_files="README.md")
+            return SimpleNamespace(
+                response="done",
+                changed_files=["README.md"],
+                trace=None,
+            )
 
     monkeypatch.setattr(service, "PredictRLM", FakePredictRLM)
 
@@ -532,7 +536,7 @@ def test_agent_aforward_uses_reusable_interpreter(
             calls["kwargs"] = kwargs
 
         async def acall(self, **kwargs: object) -> object:
-            return SimpleNamespace(response="done", changed_files=[])
+            return SimpleNamespace(response="done", changed_files=[], trace=None)
 
     monkeypatch.setattr(service, "PredictRLM", FakePredictRLM)
 
@@ -561,7 +565,7 @@ def test_agent_aforward_omits_empty_included_paths(
 
         async def acall(self, **kwargs: object) -> object:
             calls["acall_kwargs"] = kwargs
-            return SimpleNamespace(response="done", changed_files=[])
+            return SimpleNamespace(response="done", changed_files=[], trace=None)
 
     monkeypatch.setattr(service, "PredictRLM", FakePredictRLM)
 
@@ -644,9 +648,10 @@ def test_predict_rlm_sees_absolute_workspace_paths(tmp_path: Path) -> None:
     ]
 
 
-def test_coerce_result_string_changed_files() -> None:
-    from fractal.agent.service import _coerce_result
+def test_prediction_to_result_rejects_string_changed_files() -> None:
+    from fractal.agent.service import _prediction_to_result
 
-    result = _coerce_result(SimpleNamespace(response="done", changed_files="README.md"))
+    prediction = SimpleNamespace(response="done", changed_files="README.md", trace=None)
 
-    assert result.changed_files == ["README.md"]
+    with pytest.raises(TypeError, match="changed_files"):
+        _prediction_to_result(prediction)

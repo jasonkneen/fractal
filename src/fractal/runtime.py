@@ -6,10 +6,11 @@ import inspect
 from pathlib import Path
 from typing import Protocol
 
+from predict_rlm import RunTrace
 from predict_rlm.trace import extract_trace_from_exc
 
 from .agent.schema import FractalResult
-from .agent.service import FractalAgent, coerce_trace, create_sbx_interpreter
+from .agent.service import FractalAgent, create_sbx_interpreter
 from .session import (
     INTERRUPTED_ERROR,
     MAX_ITERATIONS_ERROR,
@@ -96,14 +97,10 @@ class FractalRuntime:
         return self.session.turns
 
     def close(self) -> None:
-        close = getattr(self.agent, "close", None)
-        if close is not None:
-            close()
+        self.agent.close()
 
     def prewarm(self) -> None:
-        prewarm = getattr(self.agent, "prewarm", None)
-        if prewarm is not None:
-            prewarm()
+        self.agent.prewarm()
 
     async def submit(
         self,
@@ -145,7 +142,7 @@ class FractalRuntime:
             self.session.add_agent_turn(
                 status="interrupted",
                 error=INTERRUPTED_ERROR,
-                trace=coerce_trace(extract_trace_from_exc(exc)),
+                trace=_extract_run_trace(exc),
                 turn_id=turn_id,
             )
             self.session.save(self.workspace_path)
@@ -155,7 +152,7 @@ class FractalRuntime:
                 self.session.add_agent_turn(
                     status="interrupted",
                     error=INTERRUPTED_ERROR,
-                    trace=coerce_trace(extract_trace_from_exc(exc)),
+                    trace=_extract_run_trace(exc),
                     turn_id=turn_id,
                 )
                 self.session.save(self.workspace_path)
@@ -165,7 +162,7 @@ class FractalRuntime:
             self.session.add_agent_turn(
                 status="failed",
                 error=str(exc),
-                trace=coerce_trace(extract_trace_from_exc(exc)),
+                trace=_extract_run_trace(exc),
                 turn_id=turn_id,
             )
             self.session.save(self.workspace_path)
@@ -193,3 +190,12 @@ class FractalRuntime:
             )
         self.session.save(self.workspace_path)
         return result
+
+
+def _extract_run_trace(exc: BaseException) -> RunTrace | None:
+    trace = extract_trace_from_exc(exc)
+    if trace is None or isinstance(trace, RunTrace):
+        return trace
+    raise TypeError(
+        f"PredictRLM exception trace must be RunTrace, not {type(trace).__name__}."
+    )

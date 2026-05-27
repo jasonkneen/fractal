@@ -6,7 +6,7 @@ import uuid
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from predict_rlm import RunTrace
@@ -202,22 +202,24 @@ class FractalSession:
     ) -> None:
         summary_turn = self._find_summary_turn(turn_id)
         if summary_turn is None:
-            generated_id = self.add_user_message("")
-            summary_turn = self._find_summary_turn(generated_id)
-            turn_id = generated_id
-        assert summary_turn is not None
+            if turn_id is None:
+                raise ValueError("Cannot add an agent turn before a user turn exists.")
+            raise ValueError(f"No session summary turn found for id {turn_id!r}.")
         summary_turn.agent = AgentTurn(
             status=status,
             response=response,
-            files_modified=_coerce_string_list(changed_files),
+            files_modified=_require_string_list(changed_files, "changed_files"),
             error=error,
         )
         history_turn = self._find_history_turn(turn_id or summary_turn.turn_id)
-        if history_turn is not None:
-            history_turn.status = status
-            history_turn.trace = trace
-            history_turn.error = error
-            history_turn.updated_at = _utc_now()
+        if history_turn is None:
+            raise ValueError(
+                f"No session history turn found for id {turn_id or summary_turn.turn_id!r}."
+            )
+        history_turn.status = status
+        history_turn.trace = trace
+        history_turn.error = error
+        history_turn.updated_at = _utc_now()
         self._enforce_history_limit()
 
     def _find_summary_turn(self, turn_id: str | None) -> SummaryTurn | None:
@@ -296,14 +298,12 @@ def _backup_bad_session(path: Path) -> Path | None:
     return backup_path
 
 
-def _coerce_string_list(value: Any) -> list[str]:
+def _require_string_list(value: list[str] | None, field_name: str) -> list[str]:
     if value is None:
         return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (list, tuple, set)):
-        return [str(path) for path in value]
-    return [str(value)]
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"{field_name} must be list[str] or None.")
+    return value
 
 
 def _utc_now() -> str:
