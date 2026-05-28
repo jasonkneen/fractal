@@ -50,12 +50,29 @@ def test_session_round_trip(tmp_path: Path) -> None:
     assert loaded.turns[-1].user.message == "change the README"
     assert loaded.turns[-1].agent is not None
     assert loaded.turns[-1].agent.response == "updated"
-    assert loaded.turns[-1].agent.files_read == ["src/app.py"]
-    assert loaded.turns[-1].agent.files_modified == ["README.md"]
-    assert loaded.turns[-1].agent.commands_run == ["uv run pytest"]
+    assert loaded.turns[-1].agent.files_read_count == 1
+    assert loaded.turns[-1].agent.files_changed_count == 1
+    assert loaded.turns[-1].agent.commands_run_count == 1
+    assert loaded.history[-1].files_read == ["src/app.py"]
+    assert loaded.history[-1].files_modified == ["README.md"]
+    assert loaded.history[-1].commands_run == ["uv run pytest"]
     assert loaded.history[-1].trace == trace
-    assert "Files read: src/app.py" in loaded.summary()
-    assert "Commands run: uv run pytest" in loaded.summary()
+    summary_agent = payload["summary"]["turns"][-1]["agent"]
+    assert summary_agent["files_read_count"] == 1
+    assert summary_agent["files_changed_count"] == 1
+    assert summary_agent["commands_run_count"] == 1
+    assert "files_read" not in summary_agent
+    assert "files_modified" not in summary_agent
+    assert "commands_run" not in summary_agent
+    assert payload["history"][-1]["files_read"] == ["src/app.py"]
+    assert payload["history"][-1]["files_modified"] == ["README.md"]
+    assert payload["history"][-1]["commands_run"] == ["uv run pytest"]
+    assert "files_read_count: 1" in loaded.summary()
+    assert "files_changed_count: 1" in loaded.summary()
+    assert "commands_run_count: 1" in loaded.summary()
+    assert "Files read:" not in loaded.summary()
+    assert "Files modified:" not in loaded.summary()
+    assert "Commands run:" not in loaded.summary()
 
 
 def test_load_without_session_id_starts_new_session(tmp_path: Path) -> None:
@@ -177,7 +194,8 @@ def test_session_can_store_max_iteration_turn(tmp_path: Path) -> None:
     assert loaded.turns[-1].agent is not None
     assert loaded.turns[-1].agent.status == "max_iterations"
     assert loaded.turns[-1].agent.response == "fallback answer"
-    assert loaded.turns[-1].agent.files_modified == ["README.md"]
+    assert loaded.turns[-1].agent.files_changed_count == 1
+    assert loaded.history[-1].files_modified == ["README.md"]
     assert loaded.history[-1].status == "max_iterations"
     assert loaded.history[-1].trace == trace
     assert "Agent status: max_iterations" in loaded.summary()

@@ -33,9 +33,9 @@ class UserTurn(BaseModel):
 class AgentTurn(BaseModel):
     status: Literal["succeeded", "failed", "max_iterations", "interrupted"]
     response: str = ""
-    files_read: list[str] = Field(default_factory=list)
-    files_modified: list[str] = Field(default_factory=list)
-    commands_run: list[str] = Field(default_factory=list)
+    files_read_count: int = Field(default=0, ge=0)
+    files_changed_count: int = Field(default=0, ge=0)
+    commands_run_count: int = Field(default=0, ge=0)
     error: str | None = None
 
 
@@ -53,6 +53,9 @@ class SessionHistoryTurn(BaseModel):
     turn_id: str
     user_message: str
     status: Literal["pending", "succeeded", "failed", "max_iterations", "interrupted"]
+    files_read: list[str] = Field(default_factory=list)
+    files_modified: list[str] = Field(default_factory=list)
+    commands_run: list[str] = Field(default_factory=list)
     trace: RunTrace | None = None
     error: str | None = None
     created_at: str
@@ -208,12 +211,15 @@ class FractalSession:
             if turn_id is None:
                 raise ValueError("Cannot add an agent turn before a user turn exists.")
             raise ValueError(f"No session summary turn found for id {turn_id!r}.")
+        files_read_list = _require_string_list(files_read, "files_read")
+        files_modified_list = _require_string_list(changed_files, "changed_files")
+        commands_run_list = _require_string_list(commands_run, "commands_run")
         summary_turn.agent = AgentTurn(
             status=status,
             response=response,
-            files_read=_require_string_list(files_read, "files_read"),
-            files_modified=_require_string_list(changed_files, "changed_files"),
-            commands_run=_require_string_list(commands_run, "commands_run"),
+            files_read_count=len(files_read_list),
+            files_changed_count=len(files_modified_list),
+            commands_run_count=len(commands_run_list),
             error=error,
         )
         history_turn = self._find_history_turn(turn_id or summary_turn.turn_id)
@@ -222,6 +228,9 @@ class FractalSession:
                 f"No session history turn found for id {turn_id or summary_turn.turn_id!r}."
             )
         history_turn.status = status
+        history_turn.files_read = files_read_list
+        history_turn.files_modified = files_modified_list
+        history_turn.commands_run = commands_run_list
         history_turn.trace = trace
         history_turn.error = error
         history_turn.updated_at = _utc_now()
@@ -262,12 +271,9 @@ def render_session_summary(summary: SessionSummary) -> str:
         lines.append(f"Agent status: {turn.agent.status}")
         if turn.agent.response:
             lines.append(f"Agent response: {turn.agent.response}")
-        if turn.agent.files_read:
-            lines.append(f"Files read: {', '.join(turn.agent.files_read)}")
-        if turn.agent.files_modified:
-            lines.append(f"Files modified: {', '.join(turn.agent.files_modified)}")
-        if turn.agent.commands_run:
-            lines.append(f"Commands run: {', '.join(turn.agent.commands_run)}")
+        lines.append(f"files_read_count: {turn.agent.files_read_count}")
+        lines.append(f"files_changed_count: {turn.agent.files_changed_count}")
+        lines.append(f"commands_run_count: {turn.agent.commands_run_count}")
         if turn.agent.error:
             lines.append(f"Error: {turn.agent.error}")
     return "\n".join(lines)

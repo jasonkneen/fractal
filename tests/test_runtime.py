@@ -45,7 +45,10 @@ def test_runtime_submit_persists_success_and_exposes_pending_state(tmp_path: Pat
     assert session.turns[-1].user.message == "update docs"
     assert session.turns[-1].agent is not None
     assert session.turns[-1].agent.response == "updated docs"
-    assert session.turns[-1].agent.files_modified == ["README.md"]
+    assert session.turns[-1].agent.files_read_count == 0
+    assert session.turns[-1].agent.files_changed_count == 1
+    assert session.turns[-1].agent.commands_run_count == 0
+    assert session.history[-1].files_modified == ["README.md"]
     assert calls[0]["workspace_path"] == tmp_path
     assert calls[0]["included_paths"] == [included_path.resolve()]
     assert calls[0]["user_message"] == "update docs"
@@ -120,9 +123,12 @@ def test_runtime_submit_surfaces_runtime_events_and_persists_safe_facts(
         "running uv run pytest",
     ]
     assert session.turns[-1].agent is not None
-    assert session.turns[-1].agent.files_read == ["README.md"]
-    assert session.turns[-1].agent.files_modified == []
-    assert session.turns[-1].agent.commands_run == ["uv run pytest"]
+    assert session.turns[-1].agent.files_read_count == 1
+    assert session.turns[-1].agent.files_changed_count == 0
+    assert session.turns[-1].agent.commands_run_count == 1
+    assert session.history[-1].files_read == ["README.md"]
+    assert session.history[-1].files_modified == []
+    assert session.history[-1].commands_run == ["uv run pytest"]
 
 
 def test_runtime_submit_persists_failure_before_reraising(tmp_path: Path) -> None:
@@ -342,7 +348,8 @@ def test_runtime_submit_persists_max_iterations_as_incomplete(tmp_path: Path) ->
     assert session.turns[-1].agent is not None
     assert session.turns[-1].agent.status == "max_iterations"
     assert session.turns[-1].agent.response == "fallback answer"
-    assert session.turns[-1].agent.files_modified == ["README.md"]
+    assert session.turns[-1].agent.files_changed_count == 1
+    assert session.history[-1].files_modified == ["README.md"]
     assert session.history[-1].status == "max_iterations"
     assert session.history[-1].trace == trace
 

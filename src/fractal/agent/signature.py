@@ -13,7 +13,8 @@ You receive:
 - `included_paths`: optional additional mutable workspace paths for local
   files, directories, or project-adjacent resources.
 - `user_message`: the user's current request.
-- `session_history`: detailed prior Fractal turn history with PredictRLM traces.
+- `session_history`: detailed prior Fractal turn history with file, command,
+  and PredictRLM trace details.
 
 Inspect and edit files primarily under the `workspace` path. Use
 `included_paths` when the task needs other mounted host paths, and edit included
@@ -74,8 +75,8 @@ exact prior REPL reasoning, code, outputs, tool calls, or predict calls, inspect
         )
         session_history: list[SessionHistoryTurn] = dspy.InputField(
             desc=(
-                "Full prior Fractal turn history, including PredictRLM traces, "
-                "for exact recall from Python."
+                "Full prior Fractal turn history, including file, command, "
+                "and PredictRLM trace details for exact recall from Python."
             )
         )
 
