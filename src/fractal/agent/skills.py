@@ -17,6 +17,44 @@ import stat
 root_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
 ```
 
+## Searching text
+
+Use `rg` through `subprocess.run` for text search. Do not implement grep by
+recursively reading every file in Python.
+
+Useful `rg` flags:
+
+```text
+rg -n PATTERN PATH...       # line-numbered matches: path:line:text
+rg -l PATTERN PATH...       # matching file paths only
+rg -c PATTERN PATH...       # match counts per file
+rg -C 3 PATTERN PATH...     # include 3 context lines around matches
+rg --json PATTERN PATH...   # machine-readable JSON events
+```
+
+```python
+import subprocess
+
+result = subprocess.run(
+    ["rg", "-n", "RuntimeHook|runtime_hook", "src", "tests"],
+    cwd=workspace,
+    text=True,
+    capture_output=True,
+)
+
+matches = []
+for line in result.stdout.splitlines():
+    path, line_number, text = line.split(":", 2)
+    matches.append((path, int(line_number), text.strip()))
+```
+
+Prefer searching focused source directories such as `src`, `tests`, `docs`, or
+specific included project roots. Avoid broad recursive Python walks like
+`Path(root).rglob("*.py")` unless you must inspect filesystem metadata. If you
+do walk manually, skip dependency, cache, VCS, sandbox, and session directories:
+`.git`, `.venv`, `node_modules`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`,
+`.predict_rlm_sbx`, and `.fractal`.
+
 ## Opening & creating files
 
 ```python
