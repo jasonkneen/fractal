@@ -1,0 +1,215 @@
+from __future__ import annotations
+
+import sys
+from types import ModuleType, SimpleNamespace
+
+import pytest
+
+
+def test_registry_contains_initial_provider_set() -> None:
+    from fractal.providers import (
+        ANTHROPIC,
+        CUSTOM_OPENAI_COMPATIBLE,
+        OPENAI_API,
+        OPENAI_CODEX,
+        OPENROUTER,
+        get_provider,
+        provider_registry,
+    )
+
+    assert set(provider_registry()) == {
+        OPENAI_CODEX,
+        OPENAI_API,
+        ANTHROPIC,
+        OPENROUTER,
+        CUSTOM_OPENAI_COMPATIBLE,
+    }
+    assert get_provider(OPENAI_CODEX).auth_type == "codex_cli"
+    assert get_provider(OPENAI_API).default_api_key_env == "OPENAI_API_KEY"
+    assert get_provider(ANTHROPIC).default_api_key_env == "ANTHROPIC_API_KEY"
+    assert get_provider(OPENROUTER).default_api_key_env == "OPENROUTER_API_KEY"
+    assert get_provider(CUSTOM_OPENAI_COMPATIBLE).supports_base_url is True
+
+
+def test_unknown_provider_raises_clear_error() -> None:
+    from fractal.providers import UnknownProviderError, get_provider
+
+    with pytest.raises(UnknownProviderError, match="unknown provider 'missing'"):
+        get_provider("missing")
+
+
+def test_resolve_lm_prefers_explicit_lm() -> None:
+    from fractal.providers import OPENAI_API, ProviderSelection, resolve_lm
+
+    explicit = object()
+
+    assert resolve_lm(explicit, ProviderSelection(OPENAI_API, model="gpt-5.5")) is explicit
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "expected"),
+    [
+        ("openai-api", "gpt-5.5", "openai/gpt-5.5"),
+        ("openai-api", "openai/gpt-5.5", "openai/gpt-5.5"),
+        ("anthropic", "claude-sonnet-4-5", "anthropic/claude-sonnet-4-5"),
+        (
+            "openrouter",
+            "openai/gpt-5.5",
+            "openrouter/openai/gpt-5.5",
+        ),
+        (
+            "openrouter",
+            "openrouter/openai/gpt-5.5",
+            "openrouter/openai/gpt-5.5",
+        ),
+    ],
+)
+def test_api_backed_providers_normalize_model_strings(
+    provider: str,
+    model: str,
+    expected: str,
+) -> None:
+    from fractal.providers import ProviderSelection, build_lm
+
+    assert build_lm(ProviderSelection(provider, model=model)) == expected
+
+
+def test_codex_factory_uses_codex_model_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fractal.providers import OPENAI_CODEX, ProviderSelection, build_lm
+
+    calls: dict[str, object] = {}
+
+    class FakeCodexLM:
+        def __init__(self, *, model: str) -> None:
+            calls["model"] = model
+
+    codex_module = ModuleType("dspy_codex_lm")
+    codex_module.CodexLM = FakeCodexLM
+
+    cli_module = ModuleType("dspy_codex_lm.cli")
+
+    class FakeUnsupportedModelError(RuntimeError):
+        pass
+
+    def resolve_codex_model(model: str) -> str:
+        calls["requested"] = model
+        return "resolved-codex-model"
+
+    cli_module.CodexLMUnsupportedModelError = FakeUnsupportedModelError
+    cli_module.resolve_codex_model = resolve_codex_model
+
+    monkeypatch.setitem(sys.modules, "dspy_codex_lm", codex_module)
+    monkeypatch.setitem(sys.modules, "dspy_codex_lm.cli", cli_module)
+
+    lm = build_lm(ProviderSelection(OPENAI_CODEX, model="openai/gpt-5.3-codex"))
+
+    assert isinstance(lm, FakeCodexLM)
+    assert calls == {
+        "requested": "openai/gpt-5.3-codex",
+        "model": "resolved-codex-model",
+    }
+
+
+def test_codex_factory_reports_unsupported_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fractal.providers import (
+        OPENAI_CODEX,
+        ProviderSelection,
+        UnsupportedProviderModelError,
+        build_lm,
+    )
+
+    codex_module = ModuleType("dspy_codex_lm")
+    codex_module.CodexLM = object
+
+    cli_module = ModuleType("dspy_codex_lm.cli")
+
+    class FakeUnsupportedModelError(RuntimeError):
+        pass
+
+    def resolve_codex_model(model: str) -> str:
+        raise FakeUnsupportedModelError(f"cannot route {model!r}")
+
+    cli_module.CodexLMUnsupportedModelError = FakeUnsupportedModelError
+    cli_module.resolve_codex_model = resolve_codex_model
+
+    monkeypatch.setitem(sys.modules, "dspy_codex_lm", codex_module)
+    monkeypatch.setitem(sys.modules, "dspy_codex_lm.cli", cli_module)
+
+    with pytest.raises(UnsupportedProviderModelError, match="cannot route 'gpt-4o'"):
+        build_lm(ProviderSelection(OPENAI_CODEX, model="gpt-4o"))
+
+
+def test_custom_openai_compatible_requires_complete_config() -> None:
+    from fractal.providers import (
+        CUSTOM_OPENAI_COMPATIBLE,
+        ProviderConfigError,
+        ProviderSelection,
+        build_lm,
+    )
+
+    with pytest.raises(ProviderConfigError, match="requires base_url"):
+        build_lm(
+            ProviderSelection(
+                CUSTOM_OPENAI_COMPATIBLE,
+                model="custom-model",
+                api_key_env="CUSTOM_KEY",
+            ),
+            env={"CUSTOM_KEY": "secret"},
+        )
+
+    with pytest.raises(ProviderConfigError, match="requires api_key_env"):
+        build_lm(
+            ProviderSelection(
+                CUSTOM_OPENAI_COMPATIBLE,
+                model="custom-model",
+                base_url="https://llm.example.test/v1",
+            ),
+            env={"CUSTOM_KEY": "secret"},
+        )
+
+
+def test_custom_openai_compatible_reads_key_from_env_without_leaking_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fractal.providers import (
+        CUSTOM_OPENAI_COMPATIBLE,
+        ProviderConfigError,
+        ProviderSelection,
+        build_lm,
+    )
+
+    created: dict[str, object] = {}
+
+    def fake_lm(**kwargs: object) -> object:
+        created.update(kwargs)
+        return SimpleNamespace(kind="lm")
+
+    dspy_module = ModuleType("dspy")
+    dspy_module.LM = fake_lm
+    monkeypatch.setitem(sys.modules, "dspy", dspy_module)
+
+    selection = ProviderSelection(
+        CUSTOM_OPENAI_COMPATIBLE,
+        model="custom-model",
+        api_key_env="CUSTOM_KEY",
+        base_url="https://llm.example.test/v1",
+    )
+
+    with pytest.raises(ProviderConfigError) as excinfo:
+        build_lm(selection, env={"CUSTOM_KEY": ""})
+
+    assert "secret-value" not in str(excinfo.value)
+    assert "CUSTOM_KEY" not in str(excinfo.value)
+
+    lm = build_lm(selection, env={"CUSTOM_KEY": "secret-value"})
+
+    assert lm.kind == "lm"
+    assert created == {
+        "model": "openai/custom-model",
+        "api_base": "https://llm.example.test/v1",
+        "api_key": "secret-value",
+    }
