@@ -5,11 +5,12 @@ from pathlib import Path
 from typing import Protocol, cast
 
 import dspy
+from dspy.utils.callback import BaseCallback
 from predict_rlm import PredictRLM, RunTrace, Workspace, WorkspaceMode
 from predict_rlm.interpreters import PredictRLMInterpreter, SbxInterpreter
 from predict_rlm.workspace import DirectWorkspaceMount
 
-from .schema import FractalResult
+from .schema import FractalIterationEvent, FractalResult
 from .signature import build_edit_workspace_signature
 from .skills import filesystem_coding_skill
 from ..events import build_predict_runtime_hooks
@@ -47,6 +48,7 @@ class FractalAgent(dspy.Module):
         session_history: list[SessionHistoryTurn] | None = None,
         included_paths: list[str | Path] | None = None,
         on_runtime_event: Callable[[object], object] | None = None,
+        on_iteration_event: Callable[[FractalIterationEvent], object] | None = None,
     ) -> FractalResult:
         workspace = Workspace(
             path=str(Path(workspace_path).resolve()),
@@ -82,6 +84,14 @@ class FractalAgent(dspy.Module):
                 predictor_kwargs["on_runtime_hook_event"] = on_runtime_event
 
         predictor = PredictRLM(signature, **predictor_kwargs)
+        if on_iteration_event is not None:
+            predictor.callbacks = [
+                *list(getattr(predictor, "callbacks", []) or []),
+                _FractalIterationCallback(
+                    max_iterations=self.max_iterations,
+                    on_iteration_event=on_iteration_event,
+                ),
+            ]
         result = cast(
             dspy.Prediction,
             await predictor.acall(
@@ -152,3 +162,35 @@ def _require_string_list(value: object, field_name: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise TypeError(f"{field_name} must be list[str].")
     return value
+
+
+class _FractalIterationCallback(BaseCallback):
+    def __init__(
+        self,
+        *,
+        max_iterations: int,
+        on_iteration_event: Callable[[FractalIterationEvent], object],
+    ) -> None:
+        self.max_iterations = max_iterations
+        self.on_iteration_event = on_iteration_event
+
+    def on_rlm_iteration_end(
+        self,
+        *,
+        step: object,
+        is_final: bool,
+        exception: BaseException | None,
+        **_: object,
+    ) -> None:
+        if step is None or exception is not None:
+            return
+        try:
+            self.on_iteration_event(
+                FractalIterationEvent(
+                    step=step,
+                    max_iterations=self.max_iterations,
+                    is_final=is_final,
+                )
+            )
+        except Exception:
+            pass

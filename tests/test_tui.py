@@ -26,6 +26,7 @@ class FakeRuntime:
         max_iterations: bool = False,
         interrupt: bool = False,
         interrupt_count: int = 1,
+        emit_iteration_events: bool = False,
     ) -> None:
         from fractal.session import FractalSession
 
@@ -37,6 +38,7 @@ class FakeRuntime:
         self.include_trace = include_trace
         self.max_iterations = max_iterations
         self.interrupt_count = interrupt_count if interrupt else 0
+        self.emit_iteration_events = emit_iteration_events
 
     @property
     def session_id(self) -> str:
@@ -81,6 +83,47 @@ class FakeRuntime:
             raise RuntimeError("model failed")
         response = self._response(user_message)
         trace = self._trace() if self.include_trace or self.max_iterations else None
+        if self.emit_iteration_events and trace is not None:
+            from fractal.agent.schema import FractalIterationEvent
+            from fractal.events import FractalRuntimeEvent
+
+            on_runtime_event = kwargs.get("on_runtime_event")
+            on_iteration_event = kwargs.get("on_iteration_event")
+            if callable(on_runtime_event):
+                on_runtime_event(
+                    FractalRuntimeEvent(
+                        kind="file_read",
+                        target="builtins.open",
+                        phase="before",
+                        message="opening README.md",
+                        path="README.md",
+                    )
+                )
+            if callable(on_iteration_event):
+                on_iteration_event(
+                    FractalIterationEvent(
+                        step=trace.steps[0],
+                        max_iterations=trace.max_iterations,
+                    )
+                )
+            if callable(on_runtime_event):
+                on_runtime_event(
+                    FractalRuntimeEvent(
+                        kind="command",
+                        target="subprocess.run",
+                        phase="before",
+                        message="running uv run pytest",
+                        command="uv run pytest",
+                    )
+                )
+            if callable(on_iteration_event):
+                on_iteration_event(
+                    FractalIterationEvent(
+                        step=trace.steps[1],
+                        max_iterations=trace.max_iterations,
+                        is_final=True,
+                    )
+                )
         if self.max_iterations:
             from fractal.session import MAX_ITERATIONS_ERROR
 
@@ -321,6 +364,37 @@ def test_terminal_tui_run_submits_and_prints_to_scrollback(tmp_path: Path) -> No
     assert "RLM turn 1/3" in text
     assert "python: 2 lines" in text
     assert "output: 11 chars" in text
+    assert "response to fix" in text
+
+
+def test_terminal_tui_renders_live_iteration_events_once(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(
+        tmp_path,
+        include_trace=True,
+        emit_iteration_events=True,
+    )
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO("fix\n/exit\n"),
+    )
+
+    asyncio.run(app.run())
+
+    text = output.getvalue()
+    assert text.count("RLM turn 1/3") == 1
+    assert text.count("RLM turn 2/3") == 1
+    assert "reasoning: Inspect the files first" in text
+    assert "reasoning: Apply the edit." in text
+    assert (
+        text.index("opening README.md")
+        < text.index("RLM turn 1/3")
+        < text.index("running uv run pytest")
+        < text.index("RLM turn 2/3")
+    )
     assert "response to fix" in text
 
 

@@ -563,6 +563,84 @@ def test_agent_aforward_passes_runtime_hooks_when_available(
     assert predictor_kwargs["on_runtime_hook_event"] is on_runtime_event
 
 
+def test_agent_aforward_attaches_iteration_callback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    if not workspace_available():
+        pytest.skip("predict_rlm.Workspace is not exported by the local branch yet")
+
+    from predict_rlm.trace import IterationStep
+
+    from fractal.agent import service
+    from fractal.agent.schema import FractalIterationEvent
+
+    events: list[FractalIterationEvent] = []
+    step = IterationStep(
+        iteration=1,
+        reasoning="Inspect the files.",
+        code="print('ok')",
+        output="ok",
+        untruncated_output="ok",
+        duration_ms=5,
+    )
+
+    class FakePredictRLM:
+        def __init__(self, signature: object, **kwargs: object) -> None:
+            self.callbacks: list[object] = []
+
+        async def acall(self, **kwargs: object) -> object:
+            for callback in self.callbacks:
+                callback.on_rlm_iteration_end(
+                    call_id="call-1",
+                    instance=self,
+                    iteration=1,
+                    step=step,
+                    is_final=False,
+                    exception=None,
+                )
+            return SimpleNamespace(response="done", changed_files=[], trace=None)
+
+    monkeypatch.setattr(service, "PredictRLM", FakePredictRLM)
+    monkeypatch.setattr(service, "build_predict_runtime_hooks", lambda: [])
+
+    agent = service.FractalAgent(max_iterations=7, verbose=False, debug=True)
+    asyncio.run(
+        agent.aforward(
+            tmp_path,
+            "update the README",
+            on_iteration_event=events.append,
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].step is step
+    assert events[0].max_iterations == 7
+    assert events[0].is_final is False
+
+
+def test_agent_iteration_callback_satisfies_dspy_base_handlers() -> None:
+    from dspy.utils.callback import BaseCallback
+
+    from fractal.agent import service
+
+    callback = service._FractalIterationCallback(
+        max_iterations=3,
+        on_iteration_event=lambda event: None,
+    )
+
+    assert isinstance(callback, BaseCallback)
+    callback.on_module_start(
+        call_id="call-1",
+        instance=object(),
+        inputs={},
+    )
+    callback.on_module_end(
+        call_id="call-1",
+        outputs=None,
+        exception=None,
+    )
+
+
 def test_agent_aforward_uses_reusable_interpreter(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

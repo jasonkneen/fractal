@@ -20,7 +20,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from fractal.agent.schema import FractalResult
+from fractal.agent.schema import FractalIterationEvent, FractalResult
 from fractal.events import FractalRuntimeEvent
 from fractal.session import SessionSummary, SummaryTurn
 from predict_rlm import RunTrace
@@ -144,6 +144,7 @@ class TerminalFractalApp:
         self._active_submit_task: asyncio.Task[FractalResult] | None = None
         self._turn_interrupt_requested = False
         self._active_status: Status | None = None
+        self._last_turn_live_iteration_count = 0
 
     async def run(self) -> None:
         previous_sigint_handler = signal.getsignal(signal.SIGINT)
@@ -174,7 +175,7 @@ class TerminalFractalApp:
                     self.console.print(Text("! max iterations", style="yellow"))
                 else:
                     self.console.print(Text("✓ complete"))
-                if result.trace is not None:
+                if result.trace is not None and self._last_turn_live_iteration_count == 0:
                     self.console.print(render_trace_summary(result.trace))
                 self.render_new_turns()
         finally:
@@ -189,10 +190,18 @@ class TerminalFractalApp:
         def show_runtime_event(event: FractalRuntimeEvent) -> None:
             loop.call_soon_threadsafe(self._show_runtime_event_status, event)
 
+        live_iteration_events_seen = 0
+
+        def show_iteration_event(event: FractalIterationEvent) -> None:
+            nonlocal live_iteration_events_seen
+            live_iteration_events_seen += 1
+            loop.call_soon_threadsafe(self._show_iteration_event_status, event)
+
         status = self.console.status(RUNNING_STATUS, spinner="dots")
         status.start()
         self._active_status = status
         status_running = True
+        self._last_turn_live_iteration_count = 0
         if self._turn_interrupt_requested:
             self._show_interrupting_status()
 
@@ -207,6 +216,7 @@ class TerminalFractalApp:
                 message,
                 on_pending=mark_pending,
                 on_runtime_event=show_runtime_event,
+                on_iteration_event=show_iteration_event,
                 interrupt_requested=lambda: self._turn_interrupt_requested,
             )
         )
@@ -225,6 +235,7 @@ class TerminalFractalApp:
             self.render_new_turns()
             return None
         finally:
+            self._last_turn_live_iteration_count = live_iteration_events_seen
             self._active_submit_task = None
             self._active_status = None
             self._sigint_mode = "prompt"
@@ -253,6 +264,11 @@ class TerminalFractalApp:
         if self._turn_interrupt_requested:
             return
         self.console.print(render_runtime_event_log(event))
+
+    def _show_iteration_event_status(self, event: FractalIterationEvent) -> None:
+        if self._turn_interrupt_requested:
+            return
+        self.console.print(render_iteration_event_log(event))
 
     def render_header(self) -> None:
         self.console.print(
@@ -371,13 +387,20 @@ def render_trace_summary(trace: RunTrace) -> Group:
     for index, step in enumerate(trace.steps):
         if index > 0:
             rendered.append("")
-        rendered.append(render_trace_step(trace, step))
+        rendered.append(render_trace_step(step, max_iterations=trace.max_iterations))
     if not rendered:
         rendered.append(Text("No RLM iteration trace captured.", style="dim italic"))
     return Group(*rendered)
 
 
-def render_trace_step(trace: RunTrace, step: IterationStep) -> Group:
+def render_iteration_event_log(event: FractalIterationEvent) -> Group:
+    return Group(
+        "",
+        render_trace_step(event.step, max_iterations=event.max_iterations),
+    )
+
+
+def render_trace_step(step: IterationStep, *, max_iterations: int) -> Group:
     code = step.code
     output = step.untruncated_output or step.output
     reasoning = step.reasoning.strip()
@@ -386,7 +409,7 @@ def render_trace_step(trace: RunTrace, step: IterationStep) -> Group:
 
     text = Text()
     text.append(
-        f"RLM turn {iteration}/{trace.max_iterations} ",
+        f"RLM turn {iteration}/{max_iterations} ",
         style="bold bright_black",
     )
     text.append(f"({status})", style="red" if status == "error" else "dim")

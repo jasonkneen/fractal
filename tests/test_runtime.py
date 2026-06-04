@@ -54,6 +54,7 @@ def test_runtime_submit_persists_success_and_exposes_pending_state(tmp_path: Pat
     assert calls[0]["user_message"] == "update docs"
     assert "update docs" in str(calls[0]["rendered_session_summary"])
     assert callable(calls[0]["on_runtime_event"])
+    assert callable(calls[0]["on_iteration_event"])
     assert session.history[-1].status == "succeeded"
 
 
@@ -129,6 +130,55 @@ def test_runtime_submit_surfaces_runtime_events_and_persists_safe_facts(
     assert session.history[-1].files_read == ["README.md"]
     assert session.history[-1].files_modified == []
     assert session.history[-1].commands_run == ["uv run pytest"]
+
+
+def test_runtime_submit_surfaces_iteration_events(tmp_path: Path) -> None:
+    from predict_rlm.trace import IterationStep
+
+    from fractal.agent.schema import FractalIterationEvent, FractalResult
+    from fractal.runtime import FractalRuntime
+    from fractal.session import FractalSession
+
+    step = IterationStep(
+        iteration=1,
+        reasoning="Inspect the workspace.",
+        code="print('ok')",
+        output="ok",
+        untruncated_output="ok",
+        duration_ms=5,
+    )
+    surfaced: list[FractalIterationEvent] = []
+
+    class IterationAgent:
+        async def aforward(self, **kwargs: object) -> FractalResult:
+            on_iteration_event = kwargs["on_iteration_event"]
+            assert callable(on_iteration_event)
+            on_iteration_event(
+                FractalIterationEvent(
+                    step=step,
+                    max_iterations=3,
+                    is_final=False,
+                )
+            )
+            return FractalResult(response="done")
+
+    runtime = FractalRuntime(
+        workspace_path=tmp_path,
+        session=FractalSession(),
+        agent=IterationAgent(),
+    )
+
+    asyncio.run(
+        runtime.submit(
+            "update docs",
+            on_iteration_event=surfaced.append,
+        )
+    )
+
+    assert len(surfaced) == 1
+    assert surfaced[0].step is step
+    assert surfaced[0].max_iterations == 3
+    assert surfaced[0].is_final is False
 
 
 def test_runtime_submit_persists_failure_before_reraising(tmp_path: Path) -> None:

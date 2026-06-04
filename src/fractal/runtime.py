@@ -9,7 +9,7 @@ from typing import Protocol
 from predict_rlm import RunTrace
 from predict_rlm.trace import extract_trace_from_exc
 
-from .agent.schema import FractalResult
+from .agent.schema import FractalIterationEvent, FractalResult
 from .agent.service import FractalAgent, create_sbx_interpreter
 from .events import FractalRuntimeEvent, RuntimeEventTracker
 from .session import (
@@ -31,6 +31,7 @@ class FractalAgentLike(Protocol):
         session_history: list[SessionHistoryTurn] | None = None,
         included_paths: list[Path] | None = None,
         on_runtime_event: Callable[[object], object] | None = None,
+        on_iteration_event: Callable[[FractalIterationEvent], object] | None = None,
     ) -> FractalResult: ...
 
     def close(self) -> None: ...
@@ -110,6 +111,7 @@ class FractalRuntime:
         *,
         on_pending: Callable[[], Awaitable[None] | None] | None = None,
         on_runtime_event: Callable[[FractalRuntimeEvent], object] | None = None,
+        on_iteration_event: Callable[[FractalIterationEvent], object] | None = None,
         interrupt_requested: Callable[[], bool] | None = None,
     ) -> FractalResult:
         runtime_events = RuntimeEventTracker()
@@ -123,6 +125,14 @@ class FractalRuntime:
                 return
             try:
                 on_runtime_event(event)
+            except Exception:
+                pass
+
+        def observe_iteration_event(event: FractalIterationEvent) -> None:
+            if on_iteration_event is None:
+                return
+            try:
+                on_iteration_event(event)
             except Exception:
                 pass
 
@@ -152,6 +162,7 @@ class FractalRuntime:
                 session_history=self.session.session_history_payload(),
                 included_paths=self.included_paths,
                 on_runtime_event=observe_runtime_event,
+                on_iteration_event=observe_iteration_event,
             )
         except asyncio.CancelledError as exc:
             if interrupt_requested is None or not interrupt_requested():
