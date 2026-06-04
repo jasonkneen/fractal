@@ -16,6 +16,7 @@ from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.rule import Rule
 from rich.status import Status
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
@@ -127,10 +128,12 @@ class TerminalFractalApp:
         console: Console | None = None,
         input_stream: TextIO | None = None,
         prompt_session: PromptSession[str] | None = None,
+        verbose_iterations: bool = False,
     ) -> None:
         self.runtime = runtime
         self.console = console or Console()
         self.input_stream = input_stream
+        self.verbose_iterations = verbose_iterations
         self.prompt_session = prompt_session or PromptSession(
             style=PROMPT_STYLE,
             completer=SlashCommandCompleter(),
@@ -176,7 +179,12 @@ class TerminalFractalApp:
                 else:
                     self.console.print(Text("✓ complete"))
                 if result.trace is not None and self._last_turn_live_iteration_count == 0:
-                    self.console.print(render_trace_summary(result.trace))
+                    self.console.print(
+                        render_trace_summary(
+                            result.trace,
+                            verbose=self.verbose_iterations,
+                        )
+                    )
                 self.render_new_turns()
         finally:
             signal.signal(signal.SIGINT, previous_sigint_handler)
@@ -268,7 +276,12 @@ class TerminalFractalApp:
     def _show_iteration_event_status(self, event: FractalIterationEvent) -> None:
         if self._turn_interrupt_requested:
             return
-        self.console.print(render_iteration_event_log(event))
+        self.console.print(
+            render_iteration_event_log(
+                event,
+                verbose=self.verbose_iterations,
+            )
+        )
 
     def render_header(self) -> None:
         self.console.print(
@@ -380,29 +393,49 @@ def render_summary(summary: SessionSummary) -> Group:
     return Group(*rendered)
 
 
-def render_trace_summary(trace: RunTrace) -> Group:
+def render_trace_summary(trace: RunTrace, *, verbose: bool = False) -> Group:
     rendered: list[object] = []
     if trace.steps:
         rendered.append("")
     for index, step in enumerate(trace.steps):
         if index > 0:
             rendered.append("")
-        rendered.append(render_trace_step(step, max_iterations=trace.max_iterations))
+        rendered.append(
+            render_trace_step(
+                step,
+                max_iterations=trace.max_iterations,
+                verbose=verbose,
+            )
+        )
     if not rendered:
         rendered.append(Text("No RLM iteration trace captured.", style="dim italic"))
     return Group(*rendered)
 
 
-def render_iteration_event_log(event: FractalIterationEvent) -> Group:
+def render_iteration_event_log(
+    event: FractalIterationEvent,
+    *,
+    verbose: bool = False,
+) -> Group:
     return Group(
         "",
-        render_trace_step(event.step, max_iterations=event.max_iterations),
+        render_trace_step(
+            event.step,
+            max_iterations=event.max_iterations,
+            verbose=verbose,
+        ),
     )
 
 
-def render_trace_step(step: IterationStep, *, max_iterations: int) -> Group:
+def render_trace_step(
+    step: IterationStep,
+    *,
+    max_iterations: int,
+    verbose: bool = False,
+) -> Group:
     code = step.code
     output = step.untruncated_output or step.output
+    model_output = step.output
     reasoning = step.reasoning.strip()
     iteration = step.iteration
     status = "error" if step.error else "ok"
@@ -425,7 +458,31 @@ def render_trace_step(step: IterationStep, *, max_iterations: int) -> Group:
             (0, 0, 0, 2),
         )
     )
+    if verbose:
+        rendered.append(render_trace_detail("code:", code, syntax="python"))
+        rendered.append(render_trace_detail("output:", model_output))
     return Group(*rendered)
+
+
+def render_trace_detail(label: str, body: str, *, syntax: str | None = None) -> Group:
+    if body:
+        content: Text | Syntax = (
+            Syntax(
+                body,
+                syntax,
+                background_color="default",
+                line_numbers=False,
+                word_wrap=True,
+            )
+            if syntax is not None
+            else Text(body, style="dim")
+        )
+    else:
+        content = Text("(empty)", style="dim italic")
+    return Group(
+        Padding(Text(label, style="dim italic"), (0, 0, 0, 2)),
+        Padding(content, (0, 0, 0, 4)),
+    )
 
 
 def render_reasoning(reasoning: str) -> Padding:

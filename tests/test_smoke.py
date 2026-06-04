@@ -30,6 +30,7 @@ def test_cli_parser_defaults_to_cwd() -> None:
     assert args.include == []
     assert args.max_iterations == 30
     assert args.quiet is False
+    assert args.verbose is False
     assert args.resume is None
 
 
@@ -82,6 +83,14 @@ def test_cli_parser_accepts_non_interactive_prompt() -> None:
     args = build_parser().parse_args(["-p", "update docs"])
 
     assert args.prompt == "update docs"
+
+
+def test_cli_parser_accepts_verbose() -> None:
+    from fractal.cli import build_parser
+
+    args = build_parser().parse_args(["--verbose"])
+
+    assert args.verbose is True
 
 
 def test_cli_main_dispatches_non_interactive_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -172,6 +181,119 @@ def test_run_non_interactive_prints_response_and_status(
     assert isinstance(create_kwargs, dict)
     assert create_kwargs["workspace_path"] == tmp_path
     assert create_kwargs["verbose"] is False
+
+
+def test_run_non_interactive_verbose_prints_iteration_trace_to_stderr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from predict_rlm.trace import IterationStep
+
+    from fractal.agent.schema import FractalIterationEvent, FractalResult
+    from fractal import cli
+    from fractal.runtime import FractalRuntime
+
+    calls: dict[str, object] = {}
+    step = IterationStep(
+        iteration=1,
+        reasoning="Inspect the files.",
+        code="if True:\n    print('ok')",
+        output="ok\n",
+        untruncated_output="ok\nextra hidden text",
+        duration_ms=5,
+    )
+
+    class FakeRuntime:
+        workspace_path = tmp_path
+        session_id = "session-123"
+
+        async def submit(self, message: str, **kwargs: object) -> FractalResult:
+            on_iteration_event = kwargs.get("on_iteration_event")
+            calls["on_iteration_event"] = on_iteration_event
+            if callable(on_iteration_event):
+                on_iteration_event(
+                    FractalIterationEvent(
+                        step=step,
+                        max_iterations=2,
+                    )
+                )
+            return FractalResult(response="done")
+
+    def fake_create(**kwargs: object) -> FakeRuntime:
+        calls["create_kwargs"] = kwargs
+        return FakeRuntime()
+
+    monkeypatch.setattr(FractalRuntime, "create", fake_create)
+    args = cli.build_parser().parse_args(
+        ["--workspace", str(tmp_path), "--verbose", "-p", "update docs"]
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = cli.run_non_interactive(
+        args,
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "done\n"
+    assert callable(calls["on_iteration_event"])
+    create_kwargs = calls["create_kwargs"]
+    assert isinstance(create_kwargs, dict)
+    assert create_kwargs["verbose"] is False
+    stderr_text = stderr.getvalue()
+    assert "RLM turn 1/2" in stderr_text
+    assert "reasoning: Inspect the files." in stderr_text
+    assert "python: 2 lines" in stderr_text
+    assert "output: 20 chars" in stderr_text
+    assert "code:" in stderr_text
+    assert "if True:" in stderr_text
+    assert "    print('ok')" in stderr_text
+    assert "output:" in stderr_text
+    assert "ok" in stderr_text
+    assert "extra hidden text" not in stderr_text
+
+
+def test_run_non_interactive_quiet_suppresses_verbose_iteration_trace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from fractal.agent.schema import FractalResult
+    from fractal import cli
+    from fractal.runtime import FractalRuntime
+
+    calls: dict[str, object] = {}
+
+    class FakeRuntime:
+        workspace_path = tmp_path
+        session_id = "session-123"
+
+        async def submit(self, message: str, **kwargs: object) -> FractalResult:
+            calls["on_iteration_event"] = kwargs.get("on_iteration_event")
+            return FractalResult(response="done")
+
+    monkeypatch.setattr(
+        FractalRuntime,
+        "create",
+        lambda **kwargs: FakeRuntime(),
+    )
+    args = cli.build_parser().parse_args(
+        ["--workspace", str(tmp_path), "--quiet", "--verbose", "-p", "update docs"]
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = cli.run_non_interactive(
+        args,
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "done\n"
+    assert stderr.getvalue() == ""
+    assert calls["on_iteration_event"] is None
 
 
 def test_run_non_interactive_reads_dash_prompt_from_stdin(
@@ -294,8 +416,14 @@ def test_run_tui_shows_shutdown_status_and_closes_runtime(
             return FakeRuntime()
 
     class FakeTerminalFractalApp:
-        def __init__(self, runtime: FakeRuntime, *, console: FakeConsole) -> None:
-            events.append("app")
+        def __init__(
+            self,
+            runtime: FakeRuntime,
+            *,
+            console: FakeConsole,
+            verbose_iterations: bool,
+        ) -> None:
+            events.append(f"app:{verbose_iterations}")
 
         async def run(self) -> None:
             events.append("run")
@@ -313,6 +441,7 @@ def test_run_tui_shows_shutdown_status_and_closes_runtime(
             max_iterations=1,
             debug=False,
             resume=None,
+            verbose=True,
         )
     )
 
@@ -323,7 +452,7 @@ def test_run_tui_shows_shutdown_status_and_closes_runtime(
         "status_enter",
         "prewarm",
         "status_exit",
-        "app",
+        "app:True",
         "run",
         "status:[dim]shutting down sandbox... press Ctrl-C again to force exit without cleaning up the sandbox[/dim]:dots",
         "status_enter",
@@ -373,7 +502,13 @@ def test_run_tui_allows_force_exit_during_shutdown(
             return FakeRuntime()
 
     class FakeTerminalFractalApp:
-        def __init__(self, runtime: FakeRuntime, *, console: FakeConsole) -> None:
+        def __init__(
+            self,
+            runtime: FakeRuntime,
+            *,
+            console: FakeConsole,
+            verbose_iterations: bool,
+        ) -> None:
             events.append("app")
 
         async def run(self) -> None:
@@ -392,6 +527,7 @@ def test_run_tui_allows_force_exit_during_shutdown(
             max_iterations=1,
             debug=False,
             resume=None,
+            verbose=False,
         )
     )
 

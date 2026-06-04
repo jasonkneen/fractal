@@ -59,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--quiet", action="store_true", help="reserved for quieter terminal output"
     )
     parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="show generated code and model-visible output for each RLM iteration",
+    )
+    parser.add_argument(
         "--debug", action="store_true", help="enable PredictRLM debug mode"
     )
     parser.add_argument(
@@ -80,6 +85,7 @@ def run_tui(args: argparse.Namespace) -> int:
 
     console = Console()
     workspace = args.workspace.resolve()
+    display_verbose = bool(getattr(args, "verbose", False))
     runtime = FractalRuntime.create(
         workspace_path=workspace,
         included_paths=args.include,
@@ -93,7 +99,13 @@ def run_tui(args: argparse.Namespace) -> int:
     try:
         with console.status("[dim]starting sandbox...[/dim]", spinner="dots"):
             runtime.prewarm()
-        asyncio.run(TerminalFractalApp(runtime, console=console).run())
+        asyncio.run(
+            TerminalFractalApp(
+                runtime,
+                console=console,
+                verbose_iterations=display_verbose,
+            ).run()
+        )
     finally:
         try:
             with console.status(
@@ -118,12 +130,16 @@ def run_non_interactive(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
+    from rich.console import Console
+
     from .events import FractalRuntimeEvent
     from .runtime import FractalRuntime
+    from .tui.app import render_iteration_event_log, render_trace_summary
 
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
+    display_verbose = bool(getattr(args, "verbose", False))
 
     try:
         stdin_text = read_non_interactive_stdin(args.prompt, stdin)
@@ -156,11 +172,26 @@ def run_non_interactive(
         if not args.quiet:
             print(f"fractal: {event.message}", file=stderr)
 
+    trace_console = Console(file=stderr, force_terminal=False, color_system=None)
+    live_iteration_events_seen = 0
+
+    def print_iteration_event(event: object) -> None:
+        nonlocal live_iteration_events_seen
+        if args.quiet or not display_verbose:
+            return
+        live_iteration_events_seen += 1
+        trace_console.print(render_iteration_event_log(event, verbose=True))
+
     try:
         result = asyncio.run(
             runtime.submit(
                 message,
                 on_runtime_event=print_runtime_event if not args.quiet else None,
+                on_iteration_event=(
+                    print_iteration_event
+                    if display_verbose and not args.quiet
+                    else None
+                ),
             )
         )
     except KeyboardInterrupt:
@@ -169,6 +200,14 @@ def run_non_interactive(
     except Exception as exc:
         print(f"fractal: failed: {exc}", file=stderr)
         return 1
+
+    if (
+        display_verbose
+        and not args.quiet
+        and live_iteration_events_seen == 0
+        and result.trace is not None
+    ):
+        trace_console.print(render_trace_summary(result.trace, verbose=True))
 
     if result.response:
         stdout.write(result.response)

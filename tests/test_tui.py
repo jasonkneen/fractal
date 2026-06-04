@@ -342,6 +342,55 @@ def test_terminal_tui_renders_compact_trace_summary(tmp_path: Path) -> None:
     assert "RLM turn 2/3" in text
     assert "python: 1 lines" in text
     assert "print('a')" not in text
+    assert "code:" not in text
+
+
+def test_terminal_tui_renders_verbose_trace_summary(tmp_path: Path) -> None:
+    from fractal.tui.app import render_trace_summary
+
+    runtime = FakeRuntime(tmp_path, include_trace=True)
+    trace = runtime._trace()
+    console, output = capture_console()
+
+    console.print(render_trace_summary(trace, verbose=True))
+
+    text = output.getvalue()
+    assert "RLM turn 1/3" in text
+    assert "reasoning: Inspect the files first" in text
+    assert "python: 2 lines" in text
+    assert "output: 11 chars" in text
+    assert "code:" in text
+    assert any(line.strip() == "code:" for line in text.splitlines())
+    assert not any("code:" in line and "print" in line for line in text.splitlines())
+    assert "print('a')" in text
+    assert "print('b')" in text
+    assert "output:" in text
+    assert any(line.strip() == "output:" for line in text.splitlines())
+    assert "hello" in text
+    assert "hello world" not in text
+
+
+def test_terminal_tui_renders_empty_verbose_trace_sections() -> None:
+    from predict_rlm.trace import IterationStep
+
+    from fractal.tui.app import render_trace_step
+
+    step = IterationStep(
+        iteration=1,
+        reasoning="No-op.",
+        code="",
+        output="",
+        untruncated_output="",
+        duration_ms=1,
+    )
+    console, output = capture_console()
+
+    console.print(render_trace_step(step, max_iterations=1, verbose=True))
+
+    text = output.getvalue()
+    assert "code:" in text
+    assert "output:" in text
+    assert text.count("(empty)") == 2
 
 
 def test_terminal_tui_run_submits_and_prints_to_scrollback(tmp_path: Path) -> None:
@@ -396,6 +445,39 @@ def test_terminal_tui_renders_live_iteration_events_once(tmp_path: Path) -> None
         < text.index("RLM turn 2/3")
     )
     assert "response to fix" in text
+
+
+def test_terminal_tui_renders_live_iteration_events_verbose(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(
+        tmp_path,
+        include_trace=True,
+        emit_iteration_events=True,
+    )
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO("fix\n/exit\n"),
+        verbose_iterations=True,
+    )
+
+    asyncio.run(app.run())
+
+    text = output.getvalue()
+    assert text.count("RLM turn 1/3") == 1
+    assert text.count("code:") == 2
+    assert "print('a')" in text
+    assert "x = 1" in text
+    assert "hello" in text
+    assert "hello world" not in text
+    assert (
+        text.index("opening README.md")
+        < text.index("RLM turn 1/3")
+        < text.index("running uv run pytest")
+        < text.index("RLM turn 2/3")
+    )
 
 
 def test_terminal_tui_failed_submit_renders_error_and_continues(tmp_path: Path) -> None:
