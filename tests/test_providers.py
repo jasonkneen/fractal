@@ -166,6 +166,25 @@ def test_api_backed_providers_require_configured_env_vars(
     check_provider_readiness(selection, env={env_name: "secret-value"})
 
 
+def test_api_backed_providers_reject_codex_cli_auth_source() -> None:
+    from fractal.providers import (
+        OPENAI_API,
+        ProviderConfigError,
+        ProviderSelection,
+        validate_provider_selection,
+    )
+
+    with pytest.raises(ProviderConfigError, match="auth_source='env'"):
+        validate_provider_selection(
+            ProviderSelection(
+                OPENAI_API,
+                model="gpt-5.5",
+                api_key_env="OPENAI_API_KEY",
+                auth_source="codex-cli",
+            )
+        )
+
+
 def test_codex_factory_uses_codex_model_resolver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -252,19 +271,16 @@ def test_codex_validation_requires_usable_codex_cli_auth(
 
 
 def test_codex_validation_rejects_non_cli_auth_source(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from fractal.providers import (
-        check_provider_readiness,
         OPENAI_CODEX,
         ProviderConfigError,
         ProviderSelection,
+        validate_provider_selection,
     )
 
-    install_fake_codex_modules(monkeypatch)
-
     with pytest.raises(ProviderConfigError, match="auth_source='codex-cli'"):
-        check_provider_readiness(
+        validate_provider_selection(
             ProviderSelection(OPENAI_CODEX, auth_source="codex-lm-profile")
         )
 

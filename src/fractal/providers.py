@@ -55,7 +55,7 @@ class ProviderSelection:
     model: str | None = None
     api_key_env: str | None = None
     base_url: str | None = None
-    auth_source: str | None = None
+    auth_source: ProviderAuthSource | None = None
 
 
 class ProviderBehavior(Protocol):
@@ -144,6 +144,7 @@ class ApiKeyStringLMBehavior:
         selection: ProviderSelection,
         definition: ProviderDefinition,
     ) -> None:
+        _validate_auth_source(selection, definition)
         _selection_model(selection, definition)
         _api_key_env_name(selection, definition)
 
@@ -185,6 +186,7 @@ class CodexCliLMBehavior:
         selection: ProviderSelection,
         definition: ProviderDefinition,
     ) -> None:
+        _validate_auth_source(selection, definition)
         _selection_model(selection, definition)
 
     def check_readiness(
@@ -231,6 +233,7 @@ class CustomOpenAICompatibleBehavior:
         selection: ProviderSelection,
         definition: ProviderDefinition,
     ) -> None:
+        _validate_auth_source(selection, definition)
         _custom_openai_base_url(selection)
 
     def check_readiness(
@@ -413,6 +416,17 @@ def _selection_model(
     return model
 
 
+def _validate_auth_source(
+    selection: ProviderSelection,
+    definition: ProviderDefinition,
+) -> None:
+    if selection.auth_source in {None, definition.auth_source}:
+        return
+    raise ProviderConfigError(
+        f"provider {definition.id!r} requires auth_source={definition.auth_source!r}"
+    )
+
+
 def _normalize_model(model: str, definition: ProviderDefinition) -> str:
     prefix = definition.model_prefix
     if prefix is None or model.startswith(f"{prefix}/"):
@@ -467,10 +481,6 @@ def _resolve_codex_model(
 
 
 def _codex_cli_auth_path(selection: ProviderSelection) -> Path:
-    if selection.auth_source not in {None, "codex-cli"}:
-        raise ProviderConfigError(
-            "openai-codex requires auth_source='codex-cli'"
-        )
     if shutil.which("codex") is None:
         raise MissingCodexCliError(
             "openai-codex requires the official `codex` CLI. "
