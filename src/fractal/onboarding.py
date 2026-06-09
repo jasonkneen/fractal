@@ -6,6 +6,7 @@ from typing import Any, TextIO
 
 
 CUSTOM_MODEL_SENTINEL = "__custom_model__"
+SUB_MODEL_FOLLOWS_MAIN = "__follows_main__"
 KEY_SOURCE_PASTE = "paste"
 KEY_SOURCE_ENV = "env"
 
@@ -100,6 +101,52 @@ async def async_prompt_for_model(
     return _prompt_model_line(stdin=stdin, stdout=stdout, provider=provider)
 
 
+def prompt_for_sub_model(
+    *,
+    provider: Any,
+    main_model: str,
+    stdin: TextIO,
+    stdout: TextIO,
+    current: str | None = None,
+) -> str | None:
+    if _should_use_inline_menu(stdin=stdin, stdout=stdout):
+        return _choose_sub_model(
+            provider=provider,
+            stdout=stdout,
+            main_model=main_model,
+            current=current,
+        )
+    return _prompt_sub_model_line(
+        stdin=stdin,
+        stdout=stdout,
+        provider=provider,
+        current=current,
+    )
+
+
+async def async_prompt_for_sub_model(
+    *,
+    provider: Any,
+    main_model: str,
+    stdin: TextIO,
+    stdout: TextIO,
+    current: str | None = None,
+) -> str | None:
+    if _should_use_inline_menu(stdin=stdin, stdout=stdout):
+        return await _choose_sub_model_async(
+            provider=provider,
+            stdout=stdout,
+            main_model=main_model,
+            current=current,
+        )
+    return _prompt_sub_model_line(
+        stdin=stdin,
+        stdout=stdout,
+        provider=provider,
+        current=current,
+    )
+
+
 def _provider_menu_choices(providers: list[Any], existing: Any | None) -> list[MenuChoice]:
     configured = set(existing.providers) if existing is not None else set()
     choices = []
@@ -121,24 +168,26 @@ def _default_provider_id(providers: list[Any], existing: Any | None) -> str:
     return providers[0].id
 
 
+def _existing_sub_model(existing: Any | None, provider: Any) -> str | None:
+    # A saved sub-model only stays meaningful while the provider stays the same.
+    if existing is not None and existing.active_provider == provider.id:
+        return existing.active_sub_model
+    return None
+
+
 def _merged_config(
     *,
     existing: Any | None,
     provider: Any,
     model: str,
+    sub_model: str | None,
     provider_config: Any,
 ) -> Any:
     from .config import FractalConfig
 
     providers = dict(existing.providers) if existing is not None else {}
     providers[provider.id] = provider_config
-    # A sub-model only stays meaningful while the provider stays the same.
-    sub_model = None
-    defaults = None
-    if existing is not None:
-        defaults = existing.defaults
-        if existing.active_provider == provider.id:
-            sub_model = existing.active_sub_model
+    defaults = existing.defaults if existing is not None else None
     kwargs: dict[str, Any] = {}
     if defaults is not None:
         kwargs["defaults"] = defaults
@@ -164,6 +213,12 @@ def _prompt_for_config_interactive(*, stdout: TextIO, existing: Any | None = Non
     )
     provider = get_provider(provider_id)
     model = _choose_model(provider=provider, stdout=stdout)
+    sub_model = _choose_sub_model(
+        provider=provider,
+        stdout=stdout,
+        main_model=model,
+        current=_existing_sub_model(existing, provider),
+    )
     saved = existing.providers.get(provider.id) if existing is not None else None
     if saved is not None and _reuse_saved_auth_interactive(provider=provider):
         provider_config = saved
@@ -176,6 +231,7 @@ def _prompt_for_config_interactive(*, stdout: TextIO, existing: Any | None = Non
         existing=existing,
         provider=provider,
         model=model,
+        sub_model=sub_model,
         provider_config=provider_config,
     )
 
@@ -197,6 +253,12 @@ async def _prompt_for_config_interactive_async(
     )
     provider = get_provider(provider_id)
     model = await _choose_model_async(provider=provider, stdout=stdout)
+    sub_model = await _choose_sub_model_async(
+        provider=provider,
+        stdout=stdout,
+        main_model=model,
+        current=_existing_sub_model(existing, provider),
+    )
     saved = existing.providers.get(provider.id) if existing is not None else None
     if saved is not None and await _reuse_saved_auth_interactive_async(
         provider=provider
@@ -211,6 +273,7 @@ async def _prompt_for_config_interactive_async(
         existing=existing,
         provider=provider,
         model=model,
+        sub_model=sub_model,
         provider_config=provider_config,
     )
 
@@ -245,6 +308,12 @@ def _prompt_for_config_line(
         default_provider_id=_default_provider_id(providers, existing),
     )
     model = _prompt_model_line(stdin=stdin, stdout=stdout, provider=provider)
+    sub_model = _prompt_sub_model_line(
+        stdin=stdin,
+        stdout=stdout,
+        provider=provider,
+        current=_existing_sub_model(existing, provider),
+    )
     saved = existing.providers.get(provider.id) if existing is not None else None
     if saved is not None and _prompt_yes_no_line(
         stdin=stdin,
@@ -262,6 +331,7 @@ def _prompt_for_config_line(
         existing=existing,
         provider=provider,
         model=model,
+        sub_model=sub_model,
         provider_config=provider_config,
     )
 
@@ -727,6 +797,131 @@ async def _choose_model_async(*, provider: Any, stdout: TextIO) -> str:
             required=True,
         )
     return selected
+
+
+def _sub_model_menu_choices(provider: Any, main_model: str) -> list[MenuChoice]:
+    choices, installed = _model_choices_with_installed(provider)
+    menu_choices = [
+        MenuChoice(
+            value=SUB_MODEL_FOLLOWS_MAIN,
+            label="Same as main model",
+            detail=f"Use {main_model} for RLM sub-calls too",
+        )
+    ]
+    menu_choices.extend(
+        MenuChoice(
+            value=model,
+            label=model,
+            detail="Installed on your Ollama server" if model in installed else None,
+        )
+        for model in choices
+    )
+    if provider.allows_custom_model:
+        menu_choices.append(
+            MenuChoice(
+                value=CUSTOM_MODEL_SENTINEL,
+                label="Custom model...",
+                detail="Enter any model id supported by this provider",
+            )
+        )
+    return menu_choices
+
+
+def _sub_model_menu_default(menu_choices: Sequence[MenuChoice], current: str | None) -> str:
+    if current is not None and any(choice.value == current for choice in menu_choices):
+        return current
+    return SUB_MODEL_FOLLOWS_MAIN
+
+
+def _choose_sub_model(
+    *,
+    provider: Any,
+    stdout: TextIO,
+    main_model: str,
+    current: str | None = None,
+) -> str | None:
+    menu_choices = _sub_model_menu_choices(provider, main_model)
+    selected = _choose_from_menu(
+        title=f"{provider.display_name} sub-model",
+        text="Choose a cheaper model for RLM sub-calls, or keep the main model.",
+        choices=menu_choices,
+        default=_sub_model_menu_default(menu_choices, current),
+    )
+    if selected == CUSTOM_MODEL_SENTINEL:
+        return _prompt_text_interactive(
+            title=provider.display_name,
+            label="Sub-model id",
+            stdout=stdout,
+            required=True,
+        )
+    return None if selected == SUB_MODEL_FOLLOWS_MAIN else selected
+
+
+async def _choose_sub_model_async(
+    *,
+    provider: Any,
+    stdout: TextIO,
+    main_model: str,
+    current: str | None = None,
+) -> str | None:
+    menu_choices = _sub_model_menu_choices(provider, main_model)
+    selected = await _choose_from_menu_async(
+        title=f"{provider.display_name} sub-model",
+        text="Choose a cheaper model for RLM sub-calls, or keep the main model.",
+        choices=menu_choices,
+        default=_sub_model_menu_default(menu_choices, current),
+    )
+    if selected == CUSTOM_MODEL_SENTINEL:
+        return await _prompt_text_interactive_async(
+            title=provider.display_name,
+            label="Sub-model id",
+            stdout=stdout,
+            required=True,
+        )
+    return None if selected == SUB_MODEL_FOLLOWS_MAIN else selected
+
+
+def _prompt_sub_model_line(
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    provider: Any,
+    current: str | None = None,
+) -> str | None:
+    choices, installed = _model_choices_with_installed(provider)
+    print(
+        f"Choose a sub-model for {provider.display_name} "
+        "(a cheaper model used for RLM sub-calls):",
+        file=stdout,
+    )
+    print("1. Same as main model", file=stdout)
+    model_by_index: dict[str, str] = {}
+    for index, model in enumerate(choices, start=2):
+        note = " (installed)" if model in installed else ""
+        print(f"{index}. {model}{note}", file=stdout)
+        model_by_index[str(index)] = model
+    if provider.allows_custom_model:
+        print("Or enter any model id supported by this provider.", file=stdout)
+
+    while True:
+        answer = _prompt(
+            stdin=stdin,
+            stdout=stdout,
+            label="Sub-model number or id",
+            default=current or "1",
+        )
+        if answer == "1":
+            return None
+        if answer in model_by_index:
+            return model_by_index[answer]
+        if answer in choices:
+            return answer
+        if provider.allows_custom_model:
+            return answer
+        print(
+            f"Unknown model {answer!r}. Choose one of the listed models.",
+            file=stdout,
+        )
 
 
 def _choose_from_menu(

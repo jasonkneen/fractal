@@ -48,7 +48,7 @@ SLASH_COMMANDS = {
     "/sessions": "List resumable sessions in this workspace",
     "/resume": "Resume an existing session by id",
     "/new": "Start a fresh session",
-    "/model": "Change the model (`/model sub` changes the sub-model)",
+    "/model": "Change the main model and sub-model",
     "/provider": "Change provider, model, and auth setup",
     "/usage": "Show token usage and cost for this session",
     "/verbose": "Toggle verbose RLM iteration output",
@@ -139,9 +139,12 @@ class FractalRuntimeLike(Protocol):
     @property
     def model_label(self) -> str: ...
 
-    def apply_provider_selection(self, selection: object) -> None: ...
+    @property
+    def sub_model_label(self) -> str: ...
 
-    def apply_sub_model_selection(self, selection: object) -> None: ...
+    def apply_provider_selection(
+        self, selection: object, *, sub_model: str | None = None
+    ) -> None: ...
 
     async def submit(self, user_message: str, **kwargs: object) -> FractalResult: ...
 
@@ -326,15 +329,20 @@ class TerminalFractalApp:
                 (self.runtime.session_id, "cyan"),
             )
         )
-        lm = getattr(self.runtime, "lm", None)
-        sub_lm = getattr(self.runtime, "sub_lm", None)
-        if lm:
-            model_line = Text.assemble(("model ", "dim"), (str(lm), "dim cyan"))
-            if sub_lm and sub_lm != lm:
-                model_line.append_text(
-                    Text.assemble((" | sub ", "dim"), (str(sub_lm), "dim cyan"))
+        model_label = getattr(self.runtime, "model_label", None)
+        if model_label is None:
+            lm = getattr(self.runtime, "lm", None)
+            model_label = str(lm) if lm is not None else None
+        if model_label:
+            sub_label = getattr(self.runtime, "sub_model_label", None) or model_label
+            self.console.print(
+                Text.assemble(
+                    ("model ", "dim"),
+                    (model_label, "dim cyan"),
+                    (" | sub ", "dim"),
+                    (str(sub_label), "dim cyan"),
                 )
-            self.console.print(model_line)
+            )
         self.console.print(Text("Type /help for commands, /exit to quit.", style="dim"))
 
     async def handle_slash_command(self, message: str) -> bool:
@@ -439,21 +447,15 @@ class TerminalFractalApp:
         return True
 
     async def handle_model_command(self, rest: str) -> bool:
-        mode = rest.strip().lower()
-        if mode == "sub":
-            if await self.run_sub_model_setup():
-                self.console.print(
-                    Text("Sub-model updated for this session.", style="dim")
-                )
-            return True
-        if mode:
-            self.console.print(Text("usage: /model [sub]", style="yellow"))
+        if rest.strip():
+            self.console.print(Text("usage: /model", style="yellow"))
             return True
 
         if await self.run_model_setup():
             self.console.print(
                 Text(
-                    f"Model updated to {self.runtime.model_label} for this session.",
+                    f"Model updated to {self.runtime.model_label} "
+                    f"(sub {self.runtime.sub_model_label}) for this session.",
                     style="dim",
                 )
             )
@@ -488,7 +490,10 @@ class TerminalFractalApp:
                 existing=existing,
             )
             selection = selection_from_config(config)
-            self.runtime.apply_provider_selection(selection)
+            self.runtime.apply_provider_selection(
+                selection,
+                sub_model=config.active_sub_model,
+            )
             path = write_config(config)
         except (FractalConfigError, ProviderError, SetupInputError, ValueError) as exc:
             print(f"fractal provider setup: {exc}", file=self.config_stderr)
@@ -504,7 +509,11 @@ class TerminalFractalApp:
 
     async def run_model_setup(self) -> bool:
         from fractal.config import FractalConfigError, load_config, write_config
-        from fractal.onboarding import SetupInputError, async_prompt_for_model
+        from fractal.onboarding import (
+            SetupInputError,
+            async_prompt_for_model,
+            async_prompt_for_sub_model,
+        )
         from fractal.providers import ProviderError, get_provider
         from fractal.runtime_lms import selection_from_config
 
@@ -518,50 +527,23 @@ class TerminalFractalApp:
                 stdin=self.config_stdin,
                 stdout=self.config_stdout,
             )
-            config = result.config.model_copy(update={"active_model": model})
+            sub_model = await async_prompt_for_sub_model(
+                provider=provider,
+                main_model=model,
+                stdin=self.config_stdin,
+                stdout=self.config_stdout,
+                current=result.config.active_sub_model,
+            )
+            config = result.config.model_copy(
+                update={"active_model": model, "active_sub_model": sub_model}
+            )
             selection = selection_from_config(config, path=result.path)
-            self.runtime.apply_provider_selection(selection)
+            self.runtime.apply_provider_selection(selection, sub_model=sub_model)
             path = write_config(config, path=result.path)
         except (FractalConfigError, ProviderError, SetupInputError, ValueError) as exc:
             print(f"fractal model setup: {exc}", file=self.config_stderr)
             print(
                 "No config was written. Fix the issue, then run `/model` again.",
-                file=self.config_stderr,
-            )
-            return False
-
-        print(f"Fractal config written to {path}", file=self.config_stdout)
-        return True
-
-    async def run_sub_model_setup(self) -> bool:
-        from dataclasses import replace
-
-        from fractal.config import FractalConfigError, load_config, write_config
-        from fractal.onboarding import SetupInputError, async_prompt_for_model
-        from fractal.providers import ProviderError, get_provider
-        from fractal.runtime_lms import selection_from_config
-
-        try:
-            result = load_config()
-            if result.config is None:
-                raise SetupInputError("no config found; run `/provider` first")
-            provider = get_provider(result.config.active_provider)
-            model = await async_prompt_for_model(
-                provider=provider,
-                stdin=self.config_stdin,
-                stdout=self.config_stdout,
-            )
-            config = result.config.model_copy(update={"active_sub_model": model})
-            selection = replace(
-                selection_from_config(config, path=result.path),
-                model=model,
-            )
-            self.runtime.apply_sub_model_selection(selection)
-            path = write_config(config, path=result.path)
-        except (FractalConfigError, ProviderError, SetupInputError, ValueError) as exc:
-            print(f"fractal sub-model setup: {exc}", file=self.config_stderr)
-            print(
-                "No config was written. Fix the issue, then run `/model sub` again.",
                 file=self.config_stderr,
             )
             return False

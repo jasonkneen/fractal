@@ -42,8 +42,8 @@ class FakeRuntime:
         self.emit_iteration_events = emit_iteration_events
         self.provider_label = "openai-api"
         self.model_label = "gpt-5.5"
+        self.sub_model_label = "gpt-5.5"
         self.applied_provider_selections: list[object] = []
-        self.applied_sub_model_selections: list[object] = []
 
     @property
     def session_id(self) -> str:
@@ -63,13 +63,13 @@ class FakeRuntime:
             raise FileNotFoundError(f"No Fractal session found for id {session_id!r}.")
         self.session = FractalSession.load(self.workspace_path, session_id=session_id)
 
-    def apply_provider_selection(self, selection: object) -> None:
-        self.applied_provider_selections.append(selection)
+    def apply_provider_selection(
+        self, selection: object, *, sub_model: str | None = None
+    ) -> None:
+        self.applied_provider_selections.append((selection, sub_model))
         self.provider_label = selection.provider
         self.model_label = selection.model
-
-    def apply_sub_model_selection(self, selection: object) -> None:
-        self.applied_sub_model_selections.append(selection)
+        self.sub_model_label = sub_model or selection.model
 
     async def submit(self, user_message: str, **kwargs: object) -> object:
         from fractal.agent.schema import FractalResult
@@ -858,7 +858,7 @@ def test_terminal_tui_provider_command_runs_setup(
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
     runtime = FakeRuntime(tmp_path)
     console, output = capture_console()
-    input_stream = StringIO("/provider\n2\n1\n2\n\n/exit\n")
+    input_stream = StringIO("/provider\n2\n1\n\n2\n\n/exit\n")
     app = TerminalFractalApp(
         runtime,
         console=console,
@@ -928,7 +928,7 @@ api_key_env = "OPENAI_API_KEY"
     )
     runtime = FakeRuntime(tmp_path)
     console, _ = capture_console()
-    input_stream = StringIO("/model\n2\n/exit\n")
+    input_stream = StringIO("/model\n2\n\n/exit\n")
     app = TerminalFractalApp(
         runtime,
         console=console,
@@ -1020,9 +1020,17 @@ api_key_env = "OPENAI_API_KEY"
         calls.append(kwargs["provider"].id)
         return "gpt-5.4-mini"
 
+    async def fake_async_prompt_for_sub_model(**kwargs: object) -> str | None:
+        calls.append(f"sub:{kwargs['main_model']}")
+        return None
+
     monkeypatch.setattr(
         "fractal.onboarding.async_prompt_for_model",
         fake_async_prompt_for_model,
+    )
+    monkeypatch.setattr(
+        "fractal.onboarding.async_prompt_for_sub_model",
+        fake_async_prompt_for_sub_model,
     )
     runtime = FakeRuntime(tmp_path)
     console, output = capture_console()
@@ -1034,10 +1042,10 @@ api_key_env = "OPENAI_API_KEY"
 
     asyncio.run(app.run())
 
-    assert calls == ["openai-api"]
+    assert calls == ["openai-api", "sub:gpt-5.4-mini"]
     assert runtime.submitted == []
     assert runtime.model_label == "gpt-5.4-mini"
-    assert "Model updated to gpt-5.4-mini for this session." in normalized_output(
+    assert "Model updated to gpt-5.4-mini" in normalized_output(
         output.getvalue()
     )
 
@@ -1082,7 +1090,7 @@ def test_slash_command_completer_lists_commands() -> None:
     assert none_after_space == []
 
 
-def test_terminal_tui_model_sub_command_updates_sub_model(
+def test_terminal_tui_model_command_also_chooses_sub_model(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1109,20 +1117,20 @@ api_key_env = "OPENAI_API_KEY"
     app = TerminalFractalApp(
         runtime,
         console=console,
-        input_stream=StringIO("/model sub\n3\n/exit\n"),
+        input_stream=StringIO("/model\n1\n4\n/exit\n"),
     )
 
     asyncio.run(app.run())
 
     assert runtime.submitted == []
-    assert len(runtime.applied_sub_model_selections) == 1
-    assert runtime.applied_sub_model_selections[0].model == "gpt-5.4-mini"
+    assert len(runtime.applied_provider_selections) == 1
+    selection, sub_model = runtime.applied_provider_selections[0]
+    assert selection.model == "gpt-5.5"
+    assert sub_model == "gpt-5.4-mini"
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert data["active_model"] == "gpt-5.5"
     assert data["active_sub_model"] == "gpt-5.4-mini"
-    assert "Sub-model updated for this session." in normalized_output(
-        output.getvalue()
-    )
+    assert "sub gpt-5.4-mini" in normalized_output(output.getvalue())
 
 
 def _usage_trace() -> object:
@@ -1329,3 +1337,24 @@ def test_terminal_tui_verbose_command_toggles(tmp_path: Path) -> None:
     text = output.getvalue()
     assert "verbose iteration output on" in text
     assert "verbose iteration output off" in text
+
+
+def test_terminal_tui_header_always_shows_sub_model(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(runtime, console=console, input_stream=StringIO("/exit\n"))
+
+    asyncio.run(app.run())
+
+    text = normalized_output(output.getvalue())
+    assert "model gpt-5.5 | sub gpt-5.5" in text
+
+    runtime.sub_model_label = "gpt-5.4-mini"
+    console, output = capture_console()
+    app = TerminalFractalApp(runtime, console=console, input_stream=StringIO("/exit\n"))
+
+    asyncio.run(app.run())
+
+    assert "model gpt-5.5 | sub gpt-5.4-mini" in normalized_output(output.getvalue())

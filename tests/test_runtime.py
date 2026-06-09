@@ -548,7 +548,7 @@ def test_runtime_apply_provider_selection_updates_main_and_following_sub_lm(
     assert runtime.agent.sub_lm == "openai/gpt-5.4"
 
 
-def test_runtime_apply_provider_selection_preserves_explicit_sub_lm(
+def test_runtime_apply_provider_selection_sets_and_clears_sub_model(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -560,7 +560,7 @@ def test_runtime_apply_provider_selection_preserves_explicit_sub_lm(
 
     class FakeAgent:
         lm = "old-main"
-        sub_lm = "explicit-sub"
+        sub_lm = "old-sub"
 
         async def aforward(self, **kwargs: object) -> object:
             raise AssertionError("agent should not run")
@@ -571,18 +571,26 @@ def test_runtime_apply_provider_selection_preserves_explicit_sub_lm(
         agent=FakeAgent(),
         sub_lm_follows_main=False,
     )
-
-    runtime.apply_provider_selection(
-        ProviderSelection(
-            provider="openai-api",
-            model="gpt-5.4",
-            api_key_env="OPENAI_API_KEY",
-            auth_source="env",
-        )
+    selection = ProviderSelection(
+        provider="openai-api",
+        model="gpt-5.4",
+        api_key_env="OPENAI_API_KEY",
+        auth_source="env",
     )
 
+    runtime.apply_provider_selection(selection, sub_model="gpt-5.4-mini")
+
     assert runtime.agent.lm == "openai/gpt-5.4"
-    assert runtime.agent.sub_lm == "explicit-sub"
+    assert runtime.agent.sub_lm == "openai/gpt-5.4-mini"
+    assert runtime.sub_lm_follows_main is False
+    assert runtime.sub_model_label == "gpt-5.4-mini"
+
+    # Choosing "same as main" resets the sub-LM to follow the main model.
+    runtime.apply_provider_selection(selection)
+
+    assert runtime.agent.sub_lm == runtime.agent.lm
+    assert runtime.sub_lm_follows_main is True
+    assert runtime.sub_model_label == "gpt-5.4"
 
 
 def test_runtime_prewarm_prewarms_agent(tmp_path: Path) -> None:

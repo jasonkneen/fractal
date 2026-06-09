@@ -28,7 +28,7 @@ def test_setup_merges_new_provider_into_existing_config() -> None:
     from fractal.onboarding import prompt_for_config
 
     config = prompt_for_config(
-        stdin=StringIO("openai-api\n1\n2\n\n"),
+        stdin=StringIO("openai-api\n1\n\n2\n\n"),
         stdout=StringIO(),
         existing=existing_config(),
     )
@@ -48,7 +48,7 @@ def test_setup_reuses_saved_auth_for_configured_provider() -> None:
 
     stdout = StringIO()
     config = prompt_for_config(
-        stdin=StringIO("anthropic\nclaude-opus-4-8\n\n"),
+        stdin=StringIO("anthropic\nclaude-opus-4-8\n\n\n"),
         stdout=stdout,
         existing=existing_config(),
     )
@@ -70,7 +70,7 @@ def test_setup_can_reconfigure_auth_for_configured_provider(
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     config = prompt_for_config(
-        stdin=StringIO("anthropic\nclaude-sonnet-4-6\nn\n1\nsk-ant-new\n"),
+        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\nn\n1\nsk-ant-new\n"),
         stdout=StringIO(),
         existing=existing_config(),
     )
@@ -89,7 +89,7 @@ def test_setup_default_provider_is_the_active_one() -> None:
     # Blank answers accept the defaults: active provider, default model,
     # saved auth.
     config = prompt_for_config(
-        stdin=StringIO("\n\n\n"),
+        stdin=StringIO("\n\n\n\n"),
         stdout=StringIO(),
         existing=existing_config(),
     )

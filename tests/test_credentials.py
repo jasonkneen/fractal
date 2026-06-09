@@ -164,7 +164,7 @@ def test_setup_paste_flow_stores_key_outside_config(
 
     exit_code = cli.run_config_command(
         args,
-        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n1\nsk-ant-pasted\n"),
+        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\n1\nsk-ant-pasted\n"),
         stdout=stdout,
         stderr=stderr,
     )

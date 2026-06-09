@@ -16,8 +16,8 @@ fractal --resume <session-id> # resume a stored workspace session
 ```
 
 Interactive slash commands: `/help`, `/sessions`, `/resume <id>`, `/new`,
-`/model` (`/model sub` for the sub-model), `/provider`, `/usage`, `/verbose`,
-`/exit`.
+`/model`, `/provider`, `/usage`, `/verbose`, `/exit`. The header always shows
+both the main model and the sub-model.
 
 After each turn Fractal shows host-recorded facts: iterations, wall time,
 tokens in/out, the current RLM context size, billed cost, and changed files.
@@ -123,7 +123,8 @@ so first-run onboarding still triggers.
 Beyond the active provider and model, the config supports:
 
 ```toml
-# optional: a cheaper model for RLM sub-calls; defaults to the main model
+# optional: a cheaper model for RLM sub-calls; chosen during setup and /model,
+# defaults to the main model
 active_sub_model = "gpt-5.4-mini"
 
 [defaults]            # optional run defaults, overridden by CLI flags
@@ -139,9 +140,11 @@ saved auth — so switching back to a configured provider is just two prompts
 non-interactively. Switching providers clears `active_sub_model`; run
 defaults are preserved.
 
-Inside the interactive session, `/provider` re-runs provider setup, `/model`
-switches the model for the configured provider (`/model sub` picks the
-sub-model), and `/verbose` toggles trace display.
+Inside the interactive session, `/provider` re-runs provider setup and
+`/model` switches models for the configured provider; both walk the same two
+steps — main model, then sub-model (defaulting to "same as main model") — and
+`/verbose` toggles trace display. Provider setup asks the same two model
+questions before auth.
 
 For one-off runs or tests, `--lm` bypasses global config resolution:
 

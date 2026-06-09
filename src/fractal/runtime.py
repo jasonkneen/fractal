@@ -55,6 +55,7 @@ class FractalRuntime:
         sub_lm_follows_main: bool = True,
         lm: str | None = None,
         sub_lm: str | None = None,
+        sub_model: str | None = None,
     ) -> None:
         self.workspace_path = Path(workspace_path).resolve()
         self.included_paths = [Path(path).resolve() for path in included_paths or []]
@@ -64,6 +65,7 @@ class FractalRuntime:
         self.sub_lm_follows_main = sub_lm_follows_main
         self.lm = lm
         self.sub_lm = sub_lm
+        self.sub_model = sub_model
 
     @classmethod
     def create(
@@ -79,6 +81,7 @@ class FractalRuntime:
         session_id: str | None = None,
         provider_selection: ProviderSelection | None = None,
         sub_lm_follows_main: bool = True,
+        sub_model: str | None = None,
     ) -> "FractalRuntime":
         workspace = Path(workspace_path).resolve()
         runtime = cls(
@@ -87,6 +90,7 @@ class FractalRuntime:
             session=FractalSession.load(workspace),
             provider_selection=provider_selection,
             sub_lm_follows_main=sub_lm_follows_main,
+            sub_model=sub_model,
             agent=FractalAgent(
                 lm=lm,
                 sub_lm=sub_lm,
@@ -127,27 +131,47 @@ class FractalRuntime:
             return str(lm) if lm is not None else "unconfigured"
         return self.provider_selection.model or "default"
 
-    def apply_provider_selection(self, selection: ProviderSelection) -> None:
+    @property
+    def sub_model_label(self) -> str:
+        if self.sub_model:
+            return self.sub_model
+        if self.sub_lm_follows_main:
+            return self.model_label
+        sub_lm = self.sub_lm
+        if sub_lm is None:
+            sub_lm = getattr(self.agent, "sub_lm", None)
+        return str(sub_lm) if sub_lm is not None else self.model_label
+
+    def apply_provider_selection(
+        self,
+        selection: ProviderSelection,
+        *,
+        sub_model: str | None = None,
+    ) -> None:
+        from dataclasses import replace
+
         from .providers import build_lm, check_provider_readiness
 
         check_provider_readiness(selection)
-        previous_lm = getattr(self.agent, "lm", None)
+        sub_selection = None
+        if sub_model is not None:
+            sub_selection = replace(selection, model=sub_model)
+            check_provider_readiness(sub_selection)
         lm = build_lm(selection)
         setattr(self.agent, "lm", lm)
         self.lm = lm
-        if self.sub_lm_follows_main or getattr(self.agent, "sub_lm", None) is previous_lm:
+        if sub_selection is None:
             setattr(self.agent, "sub_lm", lm)
             self.sub_lm = lm
+            self.sub_lm_follows_main = True
+            self.sub_model = None
+        else:
+            sub_lm = build_lm(sub_selection)
+            setattr(self.agent, "sub_lm", sub_lm)
+            self.sub_lm = sub_lm
+            self.sub_lm_follows_main = False
+            self.sub_model = sub_model
         self.provider_selection = selection
-
-    def apply_sub_model_selection(self, selection: ProviderSelection) -> None:
-        from .providers import build_lm, check_provider_readiness
-
-        check_provider_readiness(selection)
-        sub_lm = build_lm(selection)
-        setattr(self.agent, "sub_lm", sub_lm)
-        self.sub_lm = sub_lm
-        self.sub_lm_follows_main = False
 
     @property
     def turns(self) -> list[SummaryTurn]:

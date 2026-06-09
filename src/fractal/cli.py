@@ -184,6 +184,7 @@ def run_tui(args: argparse.Namespace) -> int:
         session_id=args.resume,
         provider_selection=lm_config.provider_selection,
         sub_lm_follows_main=lm_config.sub_lm_follows_main,
+        sub_model=lm_config.sub_model,
     )
     try:
         with console.status("[dim]starting sandbox...[/dim]", spinner="dots"):
@@ -259,6 +260,7 @@ def run_non_interactive(
             session_id=args.resume,
             provider_selection=lm_config.provider_selection,
             sub_lm_follows_main=lm_config.sub_lm_follows_main,
+            sub_model=lm_config.sub_model,
         )
     except Exception as exc:
         print(f"fractal: {exc}", file=stderr)

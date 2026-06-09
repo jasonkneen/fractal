@@ -16,6 +16,7 @@ class RuntimeLMConfig:
     provider_selection: ProviderSelection | None = None
     sub_lm_follows_main: bool = True
     defaults: DefaultsConfig | None = None
+    sub_model: str | None = None
 
 
 class RuntimeLMArgs(Protocol):
@@ -102,6 +103,7 @@ def resolve_runtime_lms(
         provider_selection=selection,
         sub_lm_follows_main=sub_lm_follows_main,
         defaults=result.config.defaults,
+        sub_model=result.config.active_sub_model,
     )
 
 

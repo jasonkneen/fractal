@@ -201,7 +201,7 @@ def test_config_setup_warns_but_writes_when_connectivity_fails(
 
     exit_code = cli.run_config_command(
         args,
-        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n2\n\n"),
+        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\n2\n\n"),
         stdout=stdout,
         stderr=stderr,
     )
@@ -226,7 +226,7 @@ def test_config_setup_verifies_connectivity_on_success(
 
     exit_code = cli.run_config_command(
         args,
-        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n2\n\n"),
+        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\n2\n\n"),
         stdout=stdout,
         stderr=StringIO(),
     )
@@ -280,7 +280,7 @@ def test_ollama_setup_lists_installed_models_first(
     stdout = StringIO()
 
     config = prompt_for_config(
-        stdin=StringIO("ollama\n1\n\n"),
+        stdin=StringIO("ollama\n1\n\n\n"),
         stdout=stdout,
     )
 
@@ -299,7 +299,7 @@ def test_ollama_setup_degrades_to_static_models_when_server_down(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
     config = prompt_for_config(
-        stdin=StringIO("ollama\n1\n\n"),
+        stdin=StringIO("ollama\n1\n\n\n"),
         stdout=StringIO(),
     )
 
