@@ -232,6 +232,7 @@ def test_inline_setup_uses_provider_and_model_menus(
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.4-nano",
+        onboarding.CUSTOM_MODEL_SENTINEL,
     ]
 
 
@@ -352,6 +353,10 @@ def test_resolve_runtime_lms_uses_global_config(
     assert lm_config is not None
     assert lm_config.lm == "openai/gpt-5.5"
     assert lm_config.sub_lm == "openai/gpt-5.5"
+    assert lm_config.provider_selection is not None
+    assert lm_config.provider_selection.provider == "openai-api"
+    assert lm_config.provider_selection.model == "gpt-5.5"
+    assert lm_config.sub_lm_follows_main is True
 
 
 def test_resolve_runtime_lms_auto_setup_on_missing_config(
@@ -399,3 +404,185 @@ def test_run_non_interactive_without_config_does_not_enter_runtime(
     assert exit_code == 1
     assert "no global config found" in stderr.getvalue()
     assert "fractal config setup" in stderr.getvalue()
+
+
+def test_resolve_runtime_lms_builds_configured_sub_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal import cli
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+    path = tmp_path / "fractal" / "config.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """
+schema_version = 1
+active_provider = "openai-api"
+active_model = "gpt-5.5"
+active_sub_model = "gpt-5.4-mini"
+
+[providers.openai-api]
+auth_source = "env"
+api_key_env = "OPENAI_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(lm=None, sub_lm=None)
+
+    lm_config = cli.resolve_runtime_lms(
+        args,
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=StringIO(),
+        auto_setup=False,
+    )
+
+    assert lm_config is not None
+    assert lm_config.lm == "openai/gpt-5.5"
+    assert lm_config.sub_lm == "openai/gpt-5.4-mini"
+    assert lm_config.sub_lm_follows_main is False
+
+
+def test_config_defaults_apply_when_cli_flags_are_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal import cli
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+    path = tmp_path / "fractal" / "config.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """
+schema_version = 1
+active_provider = "openai-api"
+active_model = "gpt-5.5"
+
+[providers.openai-api]
+auth_source = "env"
+api_key_env = "OPENAI_API_KEY"
+
+[defaults]
+max_iterations = 12
+verbose = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    lm_config = cli.resolve_runtime_lms(
+        SimpleNamespace(lm=None, sub_lm=None),
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=StringIO(),
+        auto_setup=False,
+    )
+
+    assert lm_config is not None
+    assert lm_config.defaults is not None
+    assert lm_config.defaults.max_iterations == 12
+    assert lm_config.defaults.verbose is True
+
+    args = cli.build_parser().parse_args([])
+    assert cli._effective_max_iterations(args, lm_config) == 12
+    assert cli._effective_verbose(args, lm_config) is True
+
+    args = cli.build_parser().parse_args(["--max-iterations", "3"])
+    assert cli._effective_max_iterations(args, lm_config) == 3
+
+    plain = cli.resolve_runtime_lms(
+        SimpleNamespace(lm="explicit-lm", sub_lm=None),
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=StringIO(),
+        auto_setup=False,
+    )
+    args = cli.build_parser().parse_args([])
+    assert cli._effective_max_iterations(args, plain) == 30
+    assert cli._effective_verbose(args, plain) is False
+
+
+def test_config_setup_writes_config_and_warns_when_key_env_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal import cli
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    args = cli.build_parser().parse_args(["config", "setup"])
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = cli.run_config_command(
+        args,
+        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\n"),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 0
+    path = tmp_path / "fractal" / "config.toml"
+    assert path.exists()
+    assert "ANTHROPIC_API_KEY" in stderr.getvalue()
+    assert "warning" in stderr.getvalue()
+    assert "fractal config status" in stderr.getvalue()
+
+
+def test_config_setup_ollama_writes_local_auth_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal import cli
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    args = cli.build_parser().parse_args(["config", "setup"])
+    stdout = StringIO()
+
+    exit_code = cli.run_config_command(
+        args,
+        stdin=StringIO("ollama\nqwen3-coder\n\n"),
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    data = tomllib.loads(
+        (tmp_path / "fractal" / "config.toml").read_text(encoding="utf-8")
+    )
+    assert data["active_provider"] == "ollama"
+    assert data["active_model"] == "qwen3-coder"
+    assert data["providers"]["ollama"] == {
+        "auth_source": "local",
+        "base_url": "http://localhost:11434",
+    }
+
+
+def test_line_setup_accepts_unlisted_model_for_unrestricted_provider() -> None:
+    from fractal.onboarding import prompt_for_config
+
+    config = prompt_for_config(
+        stdin=StringIO("anthropic\nclaude-fable-5\n\n"),
+        stdout=StringIO(),
+    )
+
+    assert config.active_provider == "anthropic"
+    assert config.active_model == "claude-fable-5"
+
+
+def test_line_setup_rejects_unlisted_model_for_restricted_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fractal.onboarding import prompt_for_config
+
+    install_fake_codex_modules(monkeypatch)
+    stdout = StringIO()
+    config = prompt_for_config(
+        stdin=StringIO("openai-codex\nnot-a-codex-model\ngpt-5.5\n"),
+        stdout=stdout,
+    )
+
+    assert config.active_model == "gpt-5.5"
+    assert "Unknown model 'not-a-codex-model'" in stdout.getvalue()

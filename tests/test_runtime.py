@@ -509,6 +509,82 @@ def test_runtime_close_closes_agent(tmp_path: Path) -> None:
     assert closed == [True]
 
 
+def test_runtime_apply_provider_selection_updates_main_and_following_sub_lm(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.providers import ProviderSelection
+    from fractal.runtime import FractalRuntime
+    from fractal.session import FractalSession
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+
+    class FakeAgent:
+        lm = "old-main"
+        sub_lm = "old-main"
+
+        async def aforward(self, **kwargs: object) -> object:
+            raise AssertionError("agent should not run")
+
+    runtime = FractalRuntime(
+        workspace_path=tmp_path,
+        session=FractalSession(),
+        agent=FakeAgent(),
+        sub_lm_follows_main=True,
+    )
+
+    runtime.apply_provider_selection(
+        ProviderSelection(
+            provider="openai-api",
+            model="gpt-5.4",
+            api_key_env="OPENAI_API_KEY",
+            auth_source="env",
+        )
+    )
+
+    assert runtime.provider_label == "openai-api"
+    assert runtime.model_label == "gpt-5.4"
+    assert runtime.agent.lm == "openai/gpt-5.4"
+    assert runtime.agent.sub_lm == "openai/gpt-5.4"
+
+
+def test_runtime_apply_provider_selection_preserves_explicit_sub_lm(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.providers import ProviderSelection
+    from fractal.runtime import FractalRuntime
+    from fractal.session import FractalSession
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+
+    class FakeAgent:
+        lm = "old-main"
+        sub_lm = "explicit-sub"
+
+        async def aforward(self, **kwargs: object) -> object:
+            raise AssertionError("agent should not run")
+
+    runtime = FractalRuntime(
+        workspace_path=tmp_path,
+        session=FractalSession(),
+        agent=FakeAgent(),
+        sub_lm_follows_main=False,
+    )
+
+    runtime.apply_provider_selection(
+        ProviderSelection(
+            provider="openai-api",
+            model="gpt-5.4",
+            api_key_env="OPENAI_API_KEY",
+            auth_source="env",
+        )
+    )
+
+    assert runtime.agent.lm == "openai/gpt-5.4"
+    assert runtime.agent.sub_lm == "explicit-sub"
+
+
 def test_runtime_prewarm_prewarms_agent(tmp_path: Path) -> None:
     from fractal.runtime import FractalRuntime
     from fractal.session import FractalSession

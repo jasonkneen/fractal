@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import signal
+import sys
 from typing import Protocol, TextIO
 
 from prompt_toolkit import PromptSession
@@ -35,7 +36,10 @@ PROMPT_STYLE = Style.from_dict(
     }
 )
 SLASH_COMMANDS = {
+    "/model": "Change the model for the current provider",
+    "/provider": "Change provider, model, and auth setup",
     "/resume": "Resume an existing session by id",
+    "/verbose": "Toggle verbose trace display for this session",
     "/exit": "Exit Fractal",
     "/quit": "Exit Fractal",
 }
@@ -115,6 +119,14 @@ class FractalRuntimeLike(Protocol):
 
     def resume(self, session_id: str) -> None: ...
 
+    @property
+    def provider_label(self) -> str: ...
+
+    @property
+    def model_label(self) -> str: ...
+
+    def apply_provider_selection(self, selection: object) -> None: ...
+
     async def submit(self, user_message: str, **kwargs: object) -> FractalResult: ...
 
 
@@ -129,11 +141,17 @@ class TerminalFractalApp:
         input_stream: TextIO | None = None,
         prompt_session: PromptSession[str] | None = None,
         verbose_iterations: bool = False,
+        config_stdin: TextIO | None = None,
+        config_stdout: TextIO | None = None,
+        config_stderr: TextIO | None = None,
     ) -> None:
         self.runtime = runtime
         self.console = console or Console()
         self.input_stream = input_stream
         self.verbose_iterations = verbose_iterations
+        self.config_stdin = config_stdin or input_stream or sys.stdin
+        self.config_stdout = config_stdout or getattr(self.console, "file", sys.stdout)
+        self.config_stderr = config_stderr or getattr(self.console, "file", sys.stderr)
         self.prompt_session = prompt_session or PromptSession(
             style=PROMPT_STYLE,
             completer=SlashCommandCompleter(),
@@ -166,7 +184,7 @@ class TerminalFractalApp:
                     return
                 if not message:
                     continue
-                if self.handle_slash_command(message):
+                if await self.handle_slash_command(message):
                     self._sigint_mode = "prompt"
                     continue
 
@@ -295,8 +313,14 @@ class TerminalFractalApp:
         )
         self.console.print(Text("Type /exit or /quit to quit.", style="dim"))
 
-    def handle_slash_command(self, message: str) -> bool:
+    async def handle_slash_command(self, message: str) -> bool:
         command, _, rest = message.partition(" ")
+        if command == "/provider":
+            return await self.handle_provider_command(rest)
+        if command == "/model":
+            return await self.handle_model_command(rest)
+        if command == "/verbose":
+            return self.handle_verbose_command(rest)
         if command != "/resume":
             return False
         session_id = rest.strip()
@@ -313,6 +337,106 @@ class TerminalFractalApp:
         self._prompt_echo_turn_ids.clear()
         self.console.print(Text(f"resumed session {self.runtime.session_id}", style="dim"))
         self.render_new_turns()
+        return True
+
+    async def handle_provider_command(self, rest: str) -> bool:
+        if rest.strip():
+            self.console.print(Text("usage: /provider", style="yellow"))
+            return True
+
+        if await self.run_provider_setup():
+            self.console.print(
+                Text(
+                    "Provider updated for this session and saved as the default.",
+                    style="dim",
+                )
+            )
+        return True
+
+    async def handle_model_command(self, rest: str) -> bool:
+        if rest.strip():
+            self.console.print(Text("usage: /model", style="yellow"))
+            return True
+
+        if await self.run_model_setup():
+            self.console.print(
+                Text(
+                    f"Model updated to {self.runtime.model_label} for this session.",
+                    style="dim",
+                )
+            )
+        return True
+
+    def handle_verbose_command(self, rest: str) -> bool:
+        mode = rest.strip().lower()
+        if mode in {"", "toggle"}:
+            self.verbose_iterations = not self.verbose_iterations
+        elif mode == "on":
+            self.verbose_iterations = True
+        elif mode == "off":
+            self.verbose_iterations = False
+        else:
+            self.console.print(Text("usage: /verbose [on|off]", style="yellow"))
+            return True
+        state = "on" if self.verbose_iterations else "off"
+        self.console.print(Text(f"verbose {state}", style="dim"))
+        return True
+
+    async def run_provider_setup(self) -> bool:
+        from fractal.config import FractalConfigError, write_config
+        from fractal.onboarding import SetupInputError, async_prompt_for_config
+        from fractal.providers import ProviderError
+        from fractal.runtime_lms import selection_from_config
+
+        try:
+            config = await async_prompt_for_config(
+                stdin=self.config_stdin,
+                stdout=self.config_stdout,
+            )
+            selection = selection_from_config(config)
+            self.runtime.apply_provider_selection(selection)
+            path = write_config(config)
+        except (FractalConfigError, ProviderError, SetupInputError, ValueError) as exc:
+            print(f"fractal provider setup: {exc}", file=self.config_stderr)
+            print(
+                "No config was written. Fix the issue, then run "
+                "`/provider` again.",
+                file=self.config_stderr,
+            )
+            return False
+
+        print(f"Fractal config written to {path}", file=self.config_stdout)
+        return True
+
+    async def run_model_setup(self) -> bool:
+        from fractal.config import FractalConfigError, load_config, write_config
+        from fractal.onboarding import SetupInputError, async_prompt_for_model
+        from fractal.providers import ProviderError, get_provider
+        from fractal.runtime_lms import selection_from_config
+
+        try:
+            result = load_config()
+            if result.config is None:
+                raise SetupInputError("no config found; run `/provider` first")
+            provider = get_provider(result.config.active_provider)
+            model = await async_prompt_for_model(
+                provider=provider,
+                stdin=self.config_stdin,
+                stdout=self.config_stdout,
+            )
+            config = result.config.model_copy(update={"active_model": model})
+            selection = selection_from_config(config, path=result.path)
+            self.runtime.apply_provider_selection(selection)
+            path = write_config(config, path=result.path)
+        except (FractalConfigError, ProviderError, SetupInputError, ValueError) as exc:
+            print(f"fractal model setup: {exc}", file=self.config_stderr)
+            print(
+                "No config was written. Fix the issue, then run `/model` again.",
+                file=self.config_stderr,
+            )
+            return False
+
+        print(f"Fractal config written to {path}", file=self.config_stdout)
         return True
 
     def render_new_turns(self) -> None:
@@ -520,7 +644,7 @@ def _will_submit_turn(message: str) -> bool:
     if not message or message in {"/exit", "/quit"}:
         return False
     command, _, _ = message.partition(" ")
-    return command != "/resume"
+    return command not in {"/model", "/provider", "/resume", "/verbose"}
 
 
 def render_agent_message(turn: SummaryTurn, *, pending: bool = False) -> object:

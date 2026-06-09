@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol, TextIO
 
-from .config import FractalConfig
+from .config import DefaultsConfig, FractalConfig
 from .lm_types import RuntimeLM
 from .providers import ProviderSelection
 
@@ -13,6 +13,9 @@ from .providers import ProviderSelection
 class RuntimeLMConfig:
     lm: RuntimeLM
     sub_lm: RuntimeLM | None
+    provider_selection: ProviderSelection | None = None
+    sub_lm_follows_main: bool = True
+    defaults: DefaultsConfig | None = None
 
 
 class RuntimeLMArgs(Protocol):
@@ -32,7 +35,12 @@ def resolve_runtime_lms(
     from .providers import ProviderError, build_lm
 
     if args.lm is not None:
-        return RuntimeLMConfig(lm=args.lm, sub_lm=args.sub_lm)
+        return RuntimeLMConfig(
+            lm=args.lm,
+            sub_lm=args.sub_lm,
+            provider_selection=None,
+            sub_lm_follows_main=args.sub_lm is None,
+        )
 
     try:
         result = load_config()
@@ -71,8 +79,28 @@ def resolve_runtime_lms(
             file=stderr,
         )
         return None
-    sub_lm = args.sub_lm if args.sub_lm is not None else lm
-    return RuntimeLMConfig(lm=lm, sub_lm=sub_lm)
+    sub_lm = args.sub_lm
+    sub_lm_follows_main = args.sub_lm is None
+    if sub_lm is None and result.config.active_sub_model is not None:
+        try:
+            sub_lm = build_lm(replace(selection, model=result.config.active_sub_model))
+        except ProviderError as exc:
+            print(f"fractal config: sub model: {exc}", file=stderr)
+            print(
+                "Fix `active_sub_model` in the config or remove it.",
+                file=stderr,
+            )
+            return None
+        sub_lm_follows_main = False
+    if sub_lm is None:
+        sub_lm = lm
+    return RuntimeLMConfig(
+        lm=lm,
+        sub_lm=sub_lm,
+        provider_selection=selection,
+        sub_lm_follows_main=sub_lm_follows_main,
+        defaults=result.config.defaults,
+    )
 
 
 def selection_from_config(

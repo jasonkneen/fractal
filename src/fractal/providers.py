@@ -15,10 +15,17 @@ from .lm_types import RuntimeLM
 OPENAI_CODEX = "openai-codex"
 OPENAI_API = "openai-api"
 ANTHROPIC = "anthropic"
+GEMINI = "gemini"
+XAI = "xai"
+DEEPSEEK = "deepseek"
+MISTRAL = "mistral"
+GROQ = "groq"
 OPENROUTER = "openrouter"
+OLLAMA = "ollama"
 CUSTOM_OPENAI_COMPATIBLE = "custom-openai-compatible"
-ProviderAuthType = Literal["api_key_env", "codex_cli"]
-ProviderAuthSource = Literal["env", "codex-cli"]
+ProviderAuthType = Literal["api_key_env", "codex_cli", "none"]
+ProviderAuthSource = Literal["env", "codex-cli", "local"]
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
 
 class ProviderError(ValueError):
@@ -95,8 +102,15 @@ class ProviderDefinition:
     model_prefix: str | None = None
     supports_base_url: bool = False
     base_url_label: str | None = None
+    default_base_url: str | None = None
     setup_messages: tuple[str, ...] = ()
     restricted_models: tuple[str, ...] = ()
+
+    @property
+    def allows_custom_model(self) -> bool:
+        # model_options are suggestions, not a contract; only providers with
+        # an explicit restricted set reject arbitrary model ids.
+        return not self.restricted_models
 
     def validate_shape(
         self,
@@ -137,6 +151,12 @@ class CustomOpenAIRuntime:
     model: str
     base_url: str
     api_key: str
+
+
+@dataclass(frozen=True)
+class OllamaRuntime:
+    model: str
+    base_url: str
 
 
 class ApiKeyStringLMBehavior:
@@ -285,9 +305,65 @@ class CustomOpenAICompatibleBehavior:
         )
 
 
+class OllamaLMBehavior:
+    """Local Ollama server: no credential, optional non-default base URL."""
+
+    def validate_shape(
+        self,
+        selection: ProviderSelection,
+        definition: ProviderDefinition,
+    ) -> None:
+        _validate_auth_source(selection, definition)
+        _selection_model(selection, definition)
+        _optional_base_url(selection, definition)
+
+    def check_readiness(
+        self,
+        selection: ProviderSelection,
+        definition: ProviderDefinition,
+        *,
+        env: Mapping[str, str] | None,
+    ) -> None:
+        self._runtime(selection, definition)
+
+    def build_lm(
+        self,
+        selection: ProviderSelection,
+        definition: ProviderDefinition,
+        *,
+        env: Mapping[str, str] | None,
+    ) -> RuntimeLM:
+        runtime = self._runtime(selection, definition)
+
+        try:
+            import dspy
+        except ImportError as exc:
+            raise ProviderConfigError("ollama provider requires DSPy") from exc
+
+        # litellm's ollama route ignores credentials; an empty key keeps it
+        # from picking up unrelated OPENAI_API_KEY-style env vars.
+        return dspy.LM(
+            model=runtime.model,
+            api_base=runtime.base_url,
+            api_key="",
+        )
+
+    def _runtime(
+        self,
+        selection: ProviderSelection,
+        definition: ProviderDefinition,
+    ) -> OllamaRuntime:
+        self.validate_shape(selection, definition)
+        return OllamaRuntime(
+            model=_normalize_model(_selection_model(selection, definition), definition),
+            base_url=_optional_base_url(selection, definition),
+        )
+
+
 _API_KEY_STRING_LM = ApiKeyStringLMBehavior()
 _CODEX_CLI_LM = CodexCliLMBehavior()
 _CUSTOM_OPENAI_COMPATIBLE_LM = CustomOpenAICompatibleBehavior()
+_OLLAMA_LM = OllamaLMBehavior()
 
 
 _PROVIDERS: dict[str, ProviderDefinition] = {
@@ -326,6 +402,61 @@ _PROVIDERS: dict[str, ProviderDefinition] = {
         default_api_key_env="ANTHROPIC_API_KEY",
         model_prefix="anthropic",
     ),
+    GEMINI: ProviderDefinition(
+        id=GEMINI,
+        display_name="Google Gemini",
+        auth_type="api_key_env",
+        auth_source="env",
+        default_model="gemini-3-pro",
+        behavior=_API_KEY_STRING_LM,
+        model_options=("gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash"),
+        default_api_key_env="GEMINI_API_KEY",
+        model_prefix="gemini",
+    ),
+    XAI: ProviderDefinition(
+        id=XAI,
+        display_name="xAI",
+        auth_type="api_key_env",
+        auth_source="env",
+        default_model="grok-4",
+        behavior=_API_KEY_STRING_LM,
+        model_options=("grok-code-fast-1", "grok-4-fast"),
+        default_api_key_env="XAI_API_KEY",
+        model_prefix="xai",
+    ),
+    DEEPSEEK: ProviderDefinition(
+        id=DEEPSEEK,
+        display_name="DeepSeek",
+        auth_type="api_key_env",
+        auth_source="env",
+        default_model="deepseek-chat",
+        behavior=_API_KEY_STRING_LM,
+        model_options=("deepseek-reasoner",),
+        default_api_key_env="DEEPSEEK_API_KEY",
+        model_prefix="deepseek",
+    ),
+    MISTRAL: ProviderDefinition(
+        id=MISTRAL,
+        display_name="Mistral",
+        auth_type="api_key_env",
+        auth_source="env",
+        default_model="devstral-medium-latest",
+        behavior=_API_KEY_STRING_LM,
+        model_options=("mistral-large-latest", "codestral-latest"),
+        default_api_key_env="MISTRAL_API_KEY",
+        model_prefix="mistral",
+    ),
+    GROQ: ProviderDefinition(
+        id=GROQ,
+        display_name="Groq",
+        auth_type="api_key_env",
+        auth_source="env",
+        default_model="moonshotai/kimi-k2-instruct",
+        behavior=_API_KEY_STRING_LM,
+        model_options=("llama-3.3-70b-versatile", "qwen/qwen3-32b"),
+        default_api_key_env="GROQ_API_KEY",
+        model_prefix="groq",
+    ),
     OPENROUTER: ProviderDefinition(
         id=OPENROUTER,
         display_name="OpenRouter",
@@ -346,6 +477,23 @@ _PROVIDERS: dict[str, ProviderDefinition] = {
         ),
         default_api_key_env="OPENROUTER_API_KEY",
         model_prefix="openrouter",
+    ),
+    OLLAMA: ProviderDefinition(
+        id=OLLAMA,
+        display_name="Ollama (local)",
+        auth_type="none",
+        auth_source="local",
+        default_model="qwen3-coder",
+        behavior=_OLLAMA_LM,
+        model_options=("gpt-oss:20b", "gpt-oss:120b", "devstral"),
+        model_prefix="ollama_chat",
+        supports_base_url=True,
+        base_url_label="Ollama server URL",
+        default_base_url=DEFAULT_OLLAMA_BASE_URL,
+        setup_messages=(
+            "Ollama runs models locally; no API key is needed.",
+            "Make sure the model is pulled, e.g. `ollama pull qwen3-coder`.",
+        ),
     ),
     CUSTOM_OPENAI_COMPATIBLE: ProviderDefinition(
         id=CUSTOM_OPENAI_COMPATIBLE,
@@ -533,6 +681,21 @@ def _codex_cli_auth_path(selection: ProviderSelection) -> Path:
             "Run `codex login --device-auth` again."
         ) from exc
     return auth_path
+
+
+def _optional_base_url(
+    selection: ProviderSelection,
+    definition: ProviderDefinition,
+) -> str:
+    base_url = (selection.base_url or definition.default_base_url or "").strip()
+    if not base_url:
+        raise ProviderConfigError(f"provider {definition.id!r} requires base_url")
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ProviderConfigError(
+            f"provider {definition.id!r} requires base_url to be an HTTP(S) URL"
+        )
+    return base_url
 
 
 def _custom_openai_base_url(

@@ -13,6 +13,7 @@ from .agent.schema import FractalIterationEvent, FractalResult
 from .agent.service import FractalAgent, create_sbx_interpreter
 from .events import FractalRuntimeEvent, RuntimeEventTracker
 from .lm_types import RuntimeLM
+from .providers import ProviderSelection
 from .session import (
     INTERRUPTED_ERROR,
     MAX_ITERATIONS_ERROR,
@@ -50,11 +51,15 @@ class FractalRuntime:
         included_paths: list[str | Path] | None = None,
         session: FractalSession,
         agent: FractalAgentLike,
+        provider_selection: ProviderSelection | None = None,
+        sub_lm_follows_main: bool = True,
     ) -> None:
         self.workspace_path = Path(workspace_path).resolve()
         self.included_paths = [Path(path).resolve() for path in included_paths or []]
         self.session = session
         self.agent = agent
+        self.provider_selection = provider_selection
+        self.sub_lm_follows_main = sub_lm_follows_main
 
     @classmethod
     def create(
@@ -68,12 +73,16 @@ class FractalRuntime:
         verbose: bool,
         debug: bool,
         session_id: str | None = None,
+        provider_selection: ProviderSelection | None = None,
+        sub_lm_follows_main: bool = True,
     ) -> "FractalRuntime":
         workspace = Path(workspace_path).resolve()
         runtime = cls(
             workspace_path=workspace,
             included_paths=included_paths,
             session=FractalSession.load(workspace),
+            provider_selection=provider_selection,
+            sub_lm_follows_main=sub_lm_follows_main,
             agent=FractalAgent(
                 lm=lm,
                 sub_lm=sub_lm,
@@ -95,6 +104,30 @@ class FractalRuntime:
     @property
     def session_id(self) -> str:
         return self.session.session_id
+
+    @property
+    def provider_label(self) -> str:
+        if self.provider_selection is None:
+            return "custom"
+        return self.provider_selection.provider
+
+    @property
+    def model_label(self) -> str:
+        if self.provider_selection is None:
+            lm = getattr(self.agent, "lm", None)
+            return str(lm) if lm is not None else "unconfigured"
+        return self.provider_selection.model or "default"
+
+    def apply_provider_selection(self, selection: ProviderSelection) -> None:
+        from .providers import build_lm, check_provider_readiness
+
+        check_provider_readiness(selection)
+        previous_lm = getattr(self.agent, "lm", None)
+        lm = build_lm(selection)
+        setattr(self.agent, "lm", lm)
+        if self.sub_lm_follows_main or getattr(self.agent, "sub_lm", None) is previous_lm:
+            setattr(self.agent, "sub_lm", lm)
+        self.provider_selection = selection
 
     @property
     def turns(self) -> list[SummaryTurn]:

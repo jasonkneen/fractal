@@ -51,7 +51,7 @@ class ProviderConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    auth_source: Literal["env", "codex-cli"] | None = None
+    auth_source: Literal["env", "codex-cli", "local"] | None = None
     api_key_env: str | None = None
     base_url: str | None = None
 
@@ -72,6 +72,15 @@ class ProviderConfig(BaseModel):
         return self
 
 
+class DefaultsConfig(BaseModel):
+    """Optional run defaults applied when CLI flags are not passed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_iterations: int | None = Field(default=None, ge=1)
+    verbose: bool | None = None
+
+
 class FractalConfig(BaseModel):
     """Versioned global Fractal config loaded from TOML."""
 
@@ -80,7 +89,9 @@ class FractalConfig(BaseModel):
     schema_version: Literal[1] = CONFIG_SCHEMA_VERSION
     active_provider: str = Field(min_length=1)
     active_model: str = Field(min_length=1)
+    active_sub_model: str | None = Field(default=None, min_length=1)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+    defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
 
     @model_validator(mode="before")
     @classmethod
@@ -113,7 +124,9 @@ class EffectiveFractalConfig(BaseModel):
     schema_version: Literal[1] = CONFIG_SCHEMA_VERSION
     provider: str
     model: str
+    sub_model: str | None = None
     provider_config: ProviderConfig
+    defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     config_path: Path | None = None
 
 
@@ -171,7 +184,9 @@ def resolve_effective_config(
     return EffectiveFractalConfig(
         provider=config.active_provider,
         model=config.active_model,
+        sub_model=config.active_sub_model,
         provider_config=config.providers[config.active_provider],
+        defaults=config.defaults,
         config_path=Path(path) if path is not None else None,
     )
 
@@ -180,6 +195,8 @@ def write_config(config: FractalConfig, path: str | Path | None = None) -> Path:
     config_path = Path(path) if path is not None else default_config_path()
     validated = FractalConfig.model_validate(config.model_dump(mode="python"))
     payload = validated.model_dump(mode="python", exclude_none=True)
+    if not payload.get("defaults"):
+        payload.pop("defaults", None)
 
     _ensure_config_dir(config_path.parent)
     try:
@@ -208,12 +225,18 @@ def render_effective_config(config: EffectiveFractalConfig) -> str:
         f"provider: {config.provider}",
         f"model: {config.model}",
     ])
+    if config.sub_model is not None:
+        lines.append(f"sub_model: {config.sub_model}")
     if provider_config.auth_source is not None:
         lines.append(f"auth_source: {provider_config.auth_source}")
     if provider_config.api_key_env is not None:
         lines.append(f"api_key_env: {REDACTED}")
     if provider_config.base_url is not None:
         lines.append(f"base_url: {provider_config.base_url}")
+    if config.defaults.max_iterations is not None:
+        lines.append(f"defaults.max_iterations: {config.defaults.max_iterations}")
+    if config.defaults.verbose is not None:
+        lines.append(f"defaults.verbose: {config.defaults.verbose}")
     return "\n".join(lines)
 
 

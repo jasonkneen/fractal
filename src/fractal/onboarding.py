@@ -63,6 +63,29 @@ def prompt_for_config(*, stdin: TextIO, stdout: TextIO) -> Any:
     return _prompt_for_config_line(stdin=stdin, stdout=stdout)
 
 
+async def async_prompt_for_config(*, stdin: TextIO, stdout: TextIO) -> Any:
+    if _should_use_inline_menu(stdin=stdin, stdout=stdout):
+        return await _prompt_for_config_interactive_async(stdout=stdout)
+    return _prompt_for_config_line(stdin=stdin, stdout=stdout)
+
+
+def prompt_for_model(*, provider: Any, stdin: TextIO, stdout: TextIO) -> str:
+    if _should_use_inline_menu(stdin=stdin, stdout=stdout):
+        return _choose_model(provider=provider, stdout=stdout)
+    return _prompt_model_line(stdin=stdin, stdout=stdout, provider=provider)
+
+
+async def async_prompt_for_model(
+    *,
+    provider: Any,
+    stdin: TextIO,
+    stdout: TextIO,
+) -> str:
+    if _should_use_inline_menu(stdin=stdin, stdout=stdout):
+        return await _choose_model_async(provider=provider, stdout=stdout)
+    return _prompt_model_line(stdin=stdin, stdout=stdout, provider=provider)
+
+
 def _prompt_for_config_interactive(*, stdout: TextIO) -> Any:
     from .config import FractalConfig
     from .providers import get_provider, list_providers
@@ -85,6 +108,38 @@ def _prompt_for_config_interactive(*, stdout: TextIO) -> Any:
     provider = get_provider(provider_id)
     model = _choose_model(provider=provider, stdout=stdout)
     provider_config = _prompt_provider_settings_interactive(
+        provider_id=provider.id,
+        stdout=stdout,
+    )
+    return FractalConfig(
+        active_provider=provider.id,
+        active_model=model,
+        providers={provider.id: provider_config},
+    )
+
+
+async def _prompt_for_config_interactive_async(*, stdout: TextIO) -> Any:
+    from .config import FractalConfig
+    from .providers import get_provider, list_providers
+
+    providers = list_providers()
+    print("Fractal global config setup", file=stdout)
+    provider_id = await _choose_from_menu_async(
+        title="Fractal setup",
+        text="Choose a provider. Use the arrow keys to move and Enter to select.",
+        choices=[
+            MenuChoice(
+                value=provider.id,
+                label=provider.display_name,
+                detail=f"{provider.id} - default model {provider.default_model}",
+            )
+            for provider in providers
+        ],
+        default=providers[0].id,
+    )
+    provider = get_provider(provider_id)
+    model = await _choose_model_async(provider=provider, stdout=stdout)
+    provider_config = await _prompt_provider_settings_interactive_async(
         provider_id=provider.id,
         stdout=stdout,
     )
@@ -156,12 +211,14 @@ def _prompt_provider_line(
 
 
 def _prompt_model_line(*, stdin: TextIO, stdout: TextIO, provider: Any) -> str:
-    from .providers import CUSTOM_OPENAI_COMPATIBLE, model_choices
+    from .providers import model_choices
 
     choices = model_choices(provider)
     print(f"Choose a model for {provider.display_name}:", file=stdout)
     for index, model in enumerate(choices, start=1):
         print(f"{index}. {model}", file=stdout)
+    if provider.allows_custom_model:
+        print("Or enter any model id supported by this provider.", file=stdout)
 
     model_by_index = {
         str(index): model for index, model in enumerate(choices, start=1)
@@ -177,7 +234,7 @@ def _prompt_model_line(*, stdin: TextIO, stdout: TextIO, provider: Any) -> str:
             return model_by_index[answer]
         if answer in choices:
             return answer
-        if provider.id == CUSTOM_OPENAI_COMPATIBLE:
+        if provider.allows_custom_model:
             return answer
         print(
             f"Unknown model {answer!r}. Choose one of the listed models.",
@@ -200,11 +257,19 @@ def _prompt_provider_settings_line(
 
     base_url = None
     if provider.base_url_label is not None:
-        base_url = _prompt_required(
-            stdin=stdin,
-            stdout=stdout,
-            label=provider.base_url_label,
-        )
+        if provider.default_base_url is not None:
+            base_url = _prompt(
+                stdin=stdin,
+                stdout=stdout,
+                label=provider.base_url_label,
+                default=provider.default_base_url,
+            )
+        else:
+            base_url = _prompt_required(
+                stdin=stdin,
+                stdout=stdout,
+                label=provider.base_url_label,
+            )
 
     api_key_env = None
     if provider.auth_type == "api_key_env":
@@ -244,6 +309,7 @@ def _prompt_provider_settings_interactive(
             title=provider.display_name,
             label=provider.base_url_label,
             stdout=stdout,
+            default=provider.default_base_url,
             required=True,
         )
 
@@ -254,6 +320,49 @@ def _prompt_provider_settings_interactive(
                 f"provider {provider.id!r} requires a default API key env var"
             )
         api_key_env = _prompt_text_interactive(
+            title=provider.display_name,
+            label="API key environment variable",
+            stdout=stdout,
+            default=provider.default_api_key_env,
+            required=True,
+        )
+
+    return ProviderConfig(
+        auth_source=provider.auth_source,
+        api_key_env=api_key_env,
+        base_url=base_url,
+    )
+
+
+async def _prompt_provider_settings_interactive_async(
+    *,
+    provider_id: str,
+    stdout: TextIO,
+) -> Any:
+    from .config import ProviderConfig
+    from .providers import get_provider
+
+    provider = get_provider(provider_id)
+    for message in provider.setup_messages:
+        _show_message(title=provider.display_name, text=message, stdout=stdout)
+
+    base_url = None
+    if provider.base_url_label is not None:
+        base_url = await _prompt_text_interactive_async(
+            title=provider.display_name,
+            label=provider.base_url_label,
+            stdout=stdout,
+            default=provider.default_base_url,
+            required=True,
+        )
+
+    api_key_env = None
+    if provider.auth_type == "api_key_env":
+        if provider.default_api_key_env is None:
+            raise SetupInputError(
+                f"provider {provider.id!r} requires a default API key env var"
+            )
+        api_key_env = await _prompt_text_interactive_async(
             title=provider.display_name,
             label="API key environment variable",
             stdout=stdout,
@@ -296,16 +405,16 @@ def _prompt_required(*, stdin: TextIO, stdout: TextIO, label: str) -> str:
 
 
 def _choose_model(*, provider: Any, stdout: TextIO) -> str:
-    from .providers import CUSTOM_OPENAI_COMPATIBLE, model_choices
+    from .providers import model_choices
 
     choices = model_choices(provider)
     menu_choices = [MenuChoice(value=model, label=model) for model in choices]
-    if provider.id == CUSTOM_OPENAI_COMPATIBLE:
+    if provider.allows_custom_model:
         menu_choices.append(
             MenuChoice(
                 value=CUSTOM_MODEL_SENTINEL,
                 label="Custom model...",
-                detail="Enter a model id for this endpoint",
+                detail="Enter any model id supported by this provider",
             )
         )
     selected = _choose_from_menu(
@@ -324,6 +433,35 @@ def _choose_model(*, provider: Any, stdout: TextIO) -> str:
     return selected
 
 
+async def _choose_model_async(*, provider: Any, stdout: TextIO) -> str:
+    from .providers import model_choices
+
+    choices = model_choices(provider)
+    menu_choices = [MenuChoice(value=model, label=model) for model in choices]
+    if provider.allows_custom_model:
+        menu_choices.append(
+            MenuChoice(
+                value=CUSTOM_MODEL_SENTINEL,
+                label="Custom model...",
+                detail="Enter any model id supported by this provider",
+            )
+        )
+    selected = await _choose_from_menu_async(
+        title=f"{provider.display_name} model",
+        text="Choose a model. Use the arrow keys to move and Enter to select.",
+        choices=menu_choices,
+        default=choices[0],
+    )
+    if selected == CUSTOM_MODEL_SENTINEL:
+        return await _prompt_text_interactive_async(
+            title=provider.display_name,
+            label="Model id",
+            stdout=stdout,
+            required=True,
+        )
+    return selected
+
+
 def _choose_from_menu(
     *,
     title: str,
@@ -331,6 +469,50 @@ def _choose_from_menu(
     choices: Sequence[MenuChoice],
     default: str,
 ) -> str:
+    app = _menu_application(
+        title=title,
+        text=text,
+        choices=choices,
+        default=default,
+    )
+    try:
+        result = app.run()
+    except (KeyboardInterrupt, EOFError) as exc:
+        raise SetupInputError("setup canceled") from exc
+    if result is None:
+        raise SetupInputError("setup canceled")
+    return result
+
+
+async def _choose_from_menu_async(
+    *,
+    title: str,
+    text: str,
+    choices: Sequence[MenuChoice],
+    default: str,
+) -> str:
+    app = _menu_application(
+        title=title,
+        text=text,
+        choices=choices,
+        default=default,
+    )
+    try:
+        result = await app.run_async()
+    except (KeyboardInterrupt, EOFError) as exc:
+        raise SetupInputError("setup canceled") from exc
+    if result is None:
+        raise SetupInputError("setup canceled")
+    return result
+
+
+def _menu_application(
+    *,
+    title: str,
+    text: str,
+    choices: Sequence[MenuChoice],
+    default: str,
+) -> Any:
     from prompt_toolkit.application import Application
     from prompt_toolkit.layout import Layout, Window
     from prompt_toolkit.layout.controls import FormattedTextControl
@@ -340,7 +522,7 @@ def _choose_from_menu(
         lambda: _menu_fragments(title=title, text=text, state=state),
         focusable=True,
     )
-    app = Application(
+    return Application(
         layout=Layout(
             Window(
                 content=control,
@@ -355,13 +537,6 @@ def _choose_from_menu(
         mouse_support=False,
         erase_when_done=False,
     )
-    try:
-        result = app.run()
-    except (KeyboardInterrupt, EOFError) as exc:
-        raise SetupInputError("setup canceled") from exc
-    if result is None:
-        raise SetupInputError("setup canceled")
-    return result
 
 
 def _prompt_text_interactive(
@@ -380,6 +555,34 @@ def _prompt_text_interactive(
             [("class:prompt", f"{label}: ")],
             default=default or "",
             style=_interactive_style(),
+        )
+    except (KeyboardInterrupt, EOFError) as exc:
+        raise SetupInputError("setup canceled") from exc
+    value = result.strip()
+    if value:
+        return value
+    if default:
+        return default
+    if required:
+        raise SetupInputError(f"{label} is required")
+    return ""
+
+
+async def _prompt_text_interactive_async(
+    *,
+    title: str,
+    label: str,
+    stdout: TextIO,
+    default: str | None = None,
+    required: bool = False,
+) -> str:
+    from prompt_toolkit import PromptSession
+
+    print(f"\n{title}", file=stdout)
+    try:
+        result = await PromptSession(style=_interactive_style()).prompt_async(
+            [("class:prompt", f"{label}: ")],
+            default=default or "",
         )
     except (KeyboardInterrupt, EOFError) as exc:
         raise SetupInputError("setup canceled") from exc

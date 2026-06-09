@@ -28,7 +28,7 @@ def test_cli_parser_defaults_to_cwd() -> None:
 
     assert args.workspace == Path.cwd()
     assert args.include == []
-    assert args.max_iterations == 30
+    assert args.max_iterations is None
     assert args.lm is None
     assert args.sub_lm is None
     assert args.quiet is False

@@ -81,12 +81,24 @@ def config_status(*, stdout: TextIO, stderr: TextIO) -> int:
 
 def config_setup(*, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
     from .config import FractalConfigError, write_config
-    from .providers import ProviderError, check_provider_readiness
+    from .providers import (
+        MissingProviderCredentialError,
+        ProviderError,
+        check_provider_readiness,
+    )
 
+    # A missing credential should not discard the user's setup answers: the
+    # config holds only non-secret references, so write it and tell the user
+    # exactly what to provide. Any other failure means the setup itself is
+    # wrong and nothing should be written.
+    credential_warning: str | None = None
     try:
         config = prompt_for_config(stdin=stdin, stdout=stdout)
         selection = selection_from_config(config)
-        check_provider_readiness(selection)
+        try:
+            check_provider_readiness(selection)
+        except MissingProviderCredentialError as exc:
+            credential_warning = str(exc)
         path = write_config(config)
     except (FractalConfigError, ProviderError, SetupInputError, ValueError) as exc:
         print(f"fractal config setup: {exc}", file=stderr)
@@ -98,4 +110,10 @@ def config_setup(*, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
         return 1
 
     print(f"Fractal config written to {path}", file=stdout)
+    if credential_warning is not None:
+        print(f"warning: {credential_warning}", file=stderr)
+        print(
+            "Provide the credential, then run `fractal config status` to verify.",
+            file=stderr,
+        )
     return 0

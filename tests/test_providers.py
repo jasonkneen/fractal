@@ -56,9 +56,15 @@ def test_registry_contains_initial_provider_set() -> None:
     from fractal.providers import (
         ANTHROPIC,
         CUSTOM_OPENAI_COMPATIBLE,
+        DEEPSEEK,
+        GEMINI,
+        GROQ,
+        MISTRAL,
+        OLLAMA,
         OPENAI_API,
         OPENAI_CODEX,
         OPENROUTER,
+        XAI,
         get_provider,
         model_choices,
         provider_registry,
@@ -68,7 +74,13 @@ def test_registry_contains_initial_provider_set() -> None:
         OPENAI_CODEX,
         OPENAI_API,
         ANTHROPIC,
+        GEMINI,
+        XAI,
+        DEEPSEEK,
+        MISTRAL,
+        GROQ,
         OPENROUTER,
+        OLLAMA,
         CUSTOM_OPENAI_COMPATIBLE,
     }
     assert get_provider(OPENAI_CODEX).auth_type == "codex_cli"
@@ -103,8 +115,15 @@ def test_registry_contains_initial_provider_set() -> None:
     )
     assert get_provider(OPENAI_API).default_api_key_env == "OPENAI_API_KEY"
     assert get_provider(ANTHROPIC).default_api_key_env == "ANTHROPIC_API_KEY"
+    assert get_provider(GEMINI).default_api_key_env == "GEMINI_API_KEY"
+    assert get_provider(XAI).default_api_key_env == "XAI_API_KEY"
+    assert get_provider(DEEPSEEK).default_api_key_env == "DEEPSEEK_API_KEY"
+    assert get_provider(MISTRAL).default_api_key_env == "MISTRAL_API_KEY"
+    assert get_provider(GROQ).default_api_key_env == "GROQ_API_KEY"
     assert get_provider(OPENROUTER).default_api_key_env == "OPENROUTER_API_KEY"
     assert get_provider(CUSTOM_OPENAI_COMPATIBLE).supports_base_url is True
+    assert get_provider(OLLAMA).auth_type == "none"
+    assert get_provider(OLLAMA).default_base_url == "http://localhost:11434"
 
 
 def test_unknown_provider_raises_clear_error() -> None:
@@ -128,6 +147,11 @@ def test_resolve_lm_prefers_explicit_lm() -> None:
         ("openai-api", "gpt-5.5", "openai/gpt-5.5"),
         ("openai-api", "openai/gpt-5.5", "openai/gpt-5.5"),
         ("anthropic", "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6"),
+        ("gemini", "gemini-3-pro", "gemini/gemini-3-pro"),
+        ("xai", "grok-4", "xai/grok-4"),
+        ("deepseek", "deepseek-chat", "deepseek/deepseek-chat"),
+        ("mistral", "devstral-medium-latest", "mistral/devstral-medium-latest"),
+        ("groq", "moonshotai/kimi-k2-instruct", "groq/moonshotai/kimi-k2-instruct"),
         (
             "openrouter",
             "openai/gpt-5.5",
@@ -164,6 +188,11 @@ def test_api_backed_providers_normalize_model_strings(
     [
         ("openai-api", "OPENAI_API_KEY"),
         ("anthropic", "ANTHROPIC_API_KEY"),
+        ("gemini", "GEMINI_API_KEY"),
+        ("xai", "XAI_API_KEY"),
+        ("deepseek", "DEEPSEEK_API_KEY"),
+        ("mistral", "MISTRAL_API_KEY"),
+        ("groq", "GROQ_API_KEY"),
         ("openrouter", "OPENROUTER_API_KEY"),
     ],
 )
@@ -424,3 +453,89 @@ def test_custom_openai_compatible_reads_key_from_env_without_leaking_value(
         "api_base": "https://llm.example.test/v1",
         "api_key": "secret-value",
     }
+
+
+def test_ollama_builds_local_lm_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fractal.providers import (
+        OLLAMA,
+        ProviderSelection,
+        build_lm,
+        check_provider_readiness,
+        validate_provider_selection,
+    )
+
+    created: dict[str, object] = {}
+
+    def fake_lm(**kwargs: object) -> object:
+        created.update(kwargs)
+        return SimpleNamespace(kind="lm")
+
+    dspy_module = ModuleType("dspy")
+    dspy_module.LM = fake_lm
+    monkeypatch.setitem(sys.modules, "dspy", dspy_module)
+
+    selection = ProviderSelection(OLLAMA, model="qwen3-coder", auth_source="local")
+    validate_provider_selection(selection)
+    check_provider_readiness(selection, env={})
+
+    lm = build_lm(selection, env={})
+
+    assert lm.kind == "lm"
+    assert created == {
+        "model": "ollama_chat/qwen3-coder",
+        "api_base": "http://localhost:11434",
+        "api_key": "",
+    }
+
+
+def test_ollama_accepts_custom_base_url_and_rejects_bad_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fractal.providers import (
+        OLLAMA,
+        ProviderConfigError,
+        ProviderSelection,
+        build_lm,
+        validate_provider_selection,
+    )
+
+    created: dict[str, object] = {}
+
+    def fake_lm(**kwargs: object) -> object:
+        created.update(kwargs)
+        return SimpleNamespace(kind="lm")
+
+    dspy_module = ModuleType("dspy")
+    dspy_module.LM = fake_lm
+    monkeypatch.setitem(sys.modules, "dspy", dspy_module)
+
+    build_lm(
+        ProviderSelection(
+            OLLAMA,
+            model="devstral",
+            base_url="http://ollama.lan:11434",
+        ),
+        env={},
+    )
+    assert created["api_base"] == "http://ollama.lan:11434"
+
+    with pytest.raises(ProviderConfigError, match="HTTP\\(S\\) URL"):
+        validate_provider_selection(
+            ProviderSelection(OLLAMA, model="devstral", base_url="not-a-url")
+        )
+
+
+def test_ollama_rejects_other_auth_sources() -> None:
+    from fractal.providers import (
+        OLLAMA,
+        ProviderConfigError,
+        ProviderSelection,
+        validate_provider_selection,
+    )
+
+    with pytest.raises(ProviderConfigError, match="auth_source='local'"):
+        validate_provider_selection(
+            ProviderSelection(OLLAMA, model="devstral", auth_source="env")
+        )

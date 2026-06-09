@@ -4,6 +4,7 @@ import asyncio
 from io import StringIO
 from pathlib import Path
 import signal
+import tomllib
 
 import pytest
 from rich.console import Console
@@ -39,6 +40,9 @@ class FakeRuntime:
         self.max_iterations = max_iterations
         self.interrupt_count = interrupt_count if interrupt else 0
         self.emit_iteration_events = emit_iteration_events
+        self.provider_label = "openai-api"
+        self.model_label = "gpt-5.5"
+        self.applied_provider_selections: list[object] = []
 
     @property
     def session_id(self) -> str:
@@ -52,6 +56,11 @@ class FakeRuntime:
         if not session_path(self.workspace_path, session_id).exists():
             raise FileNotFoundError(f"No Fractal session found for id {session_id!r}.")
         self.session = FractalSession.load(self.workspace_path, session_id=session_id)
+
+    def apply_provider_selection(self, selection: object) -> None:
+        self.applied_provider_selections.append(selection)
+        self.provider_label = selection.provider
+        self.model_label = selection.model
 
     async def submit(self, user_message: str, **kwargs: object) -> object:
         from fractal.agent.schema import FractalResult
@@ -830,6 +839,220 @@ def test_terminal_tui_resume_command_errors_for_missing_session(tmp_path: Path) 
     assert "No Fractal session found for id 'missing'." in text
 
 
+def test_terminal_tui_provider_command_runs_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    input_stream = StringIO("/provider\n2\n1\n\n/exit\n")
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=input_stream,
+    )
+
+    asyncio.run(app.run())
+
+    config_path = tmp_path / "fractal" / "config.toml"
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert runtime.submitted == []
+    assert len(runtime.applied_provider_selections) == 1
+    assert data["active_provider"] == "openai-api"
+    assert data["active_model"] == "gpt-5.5"
+    assert data["providers"]["openai-api"] == {
+        "auth_source": "env",
+        "api_key_env": "OPENAI_API_KEY",
+    }
+    text = output.getvalue()
+    assert "Fractal global config setup" in text
+    assert "Fractal config written to" in text
+    assert (
+        "Provider updated for this session and saved as the default."
+        in normalized_output(text)
+    )
+    assert "sk-secret-value" not in config_path.read_text(encoding="utf-8")
+
+
+def test_terminal_tui_provider_command_rejects_arguments(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO("/provider setup\n/exit\n"),
+    )
+
+    asyncio.run(app.run())
+
+    assert runtime.submitted == []
+    assert "usage: /provider" in output.getvalue()
+
+
+def test_terminal_tui_model_command_updates_current_provider_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+    config_path = tmp_path / "fractal" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        """
+schema_version = 1
+active_provider = "openai-api"
+active_model = "gpt-5.5"
+
+[providers.openai-api]
+auth_source = "env"
+api_key_env = "OPENAI_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime = FakeRuntime(tmp_path)
+    console, _ = capture_console()
+    input_stream = StringIO("/model\n2\n/exit\n")
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=input_stream,
+    )
+
+    asyncio.run(app.run())
+
+    assert runtime.submitted == []
+    assert runtime.model_label == "gpt-5.4"
+    assert len(runtime.applied_provider_selections) == 1
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["active_provider"] == "openai-api"
+    assert data["active_model"] == "gpt-5.4"
+
+
+def test_terminal_tui_provider_setup_uses_in_process_onboarding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.config import FractalConfig, ProviderConfig
+    from fractal.tui import TerminalFractalApp
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+    calls: list[str] = []
+
+    async def fake_async_prompt_for_config(**kwargs: object) -> FractalConfig:
+        calls.append("async_prompt_for_config")
+        return FractalConfig(
+            active_provider="openai-api",
+            active_model="gpt-5.5",
+            providers={
+                "openai-api": ProviderConfig(
+                    auth_source="env",
+                    api_key_env="OPENAI_API_KEY",
+                )
+            },
+        )
+
+    monkeypatch.setattr(
+        "fractal.onboarding.async_prompt_for_config",
+        fake_async_prompt_for_config,
+    )
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO("/provider\n/exit\n"),
+    )
+
+    asyncio.run(app.run())
+
+    assert calls == ["async_prompt_for_config"]
+    assert runtime.submitted == []
+    assert len(runtime.applied_provider_selections) == 1
+    assert (
+        "Provider updated for this session and saved as the default."
+        in normalized_output(output.getvalue())
+    )
+
+
+def test_terminal_tui_model_setup_uses_model_only_onboarding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+    config_path = tmp_path / "fractal" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        """
+schema_version = 1
+active_provider = "openai-api"
+active_model = "gpt-5.5"
+
+[providers.openai-api]
+auth_source = "env"
+api_key_env = "OPENAI_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    async def fake_async_prompt_for_model(**kwargs: object) -> str:
+        calls.append(kwargs["provider"].id)
+        return "gpt-5.4-mini"
+
+    monkeypatch.setattr(
+        "fractal.onboarding.async_prompt_for_model",
+        fake_async_prompt_for_model,
+    )
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO("/model\n/exit\n"),
+    )
+
+    asyncio.run(app.run())
+
+    assert calls == ["openai-api"]
+    assert runtime.submitted == []
+    assert runtime.model_label == "gpt-5.4-mini"
+    assert "Model updated to gpt-5.4-mini for this session." in normalized_output(
+        output.getvalue()
+    )
+
+
+def test_terminal_tui_verbose_command_toggles_session_verbosity(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO("/verbose\n/verbose off\n/verbose nope\n/exit\n"),
+    )
+
+    asyncio.run(app.run())
+
+    assert runtime.submitted == []
+    text = output.getvalue()
+    assert "verbose on" in text
+    assert "verbose off" in text
+    assert "usage: /verbose [on|off]" in text
+
+
 def test_slash_command_completer_lists_commands() -> None:
     from prompt_toolkit.document import Document
 
@@ -837,8 +1060,14 @@ def test_slash_command_completer_lists_commands() -> None:
 
     completer = SlashCommandCompleter()
 
+    model = list(completer.get_completions(Document("/m"), None))
+    provider = list(completer.get_completions(Document("/p"), None))
     resume = list(completer.get_completions(Document("/r"), None))
+    verbose = list(completer.get_completions(Document("/v"), None))
     none_after_space = list(completer.get_completions(Document("/resume "), None))
 
+    assert [completion.text for completion in model] == ["/model"]
+    assert [completion.text for completion in provider] == ["/provider"]
     assert [completion.text for completion in resume] == ["/resume"]
+    assert [completion.text for completion in verbose] == ["/verbose"]
     assert none_after_space == []

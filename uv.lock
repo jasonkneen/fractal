@@ -1282,6 +1282,8 @@ dependencies = [
     { name = "dspy" },
     { name = "nest-asyncio" },
     { name = "pydantic" },
+    { name = "pygments" },
+    { name = "tenacity" },
 ]
 
 [package.metadata]
@@ -1297,7 +1299,9 @@ requires-dist = [
     { name = "openpyxl", marker = "extra == 'examples'", specifier = ">=3.1.0" },
     { name = "plotly", marker = "extra == 'gepa-viz'", specifier = ">=5.0.0" },
     { name = "pydantic", specifier = ">=2.8.2,<3" },
+    { name = "pygments", specifier = ">=2.0.0" },
     { name = "pymupdf", marker = "extra == 'examples'", specifier = ">=1.24.0" },
+    { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tenacity", marker = "extra == 'codex-lm'", specifier = ">=9.1.4" },
     { name = "tqdm", marker = "extra == 'gepa'", specifier = ">=4.0.0" },
 ]

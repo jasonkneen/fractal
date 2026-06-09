@@ -12,6 +12,23 @@ from .runtime_lms import resolve_runtime_lms
 
 MAX_STDIN_BYTES = 10 * 1024 * 1024
 MAX_ITERATIONS_EXIT_CODE = 2
+DEFAULT_MAX_ITERATIONS = 30
+
+
+def _effective_max_iterations(args: argparse.Namespace, lm_config: Any) -> int:
+    if args.max_iterations is not None:
+        return args.max_iterations
+    defaults = getattr(lm_config, "defaults", None)
+    if defaults is not None and defaults.max_iterations is not None:
+        return defaults.max_iterations
+    return DEFAULT_MAX_ITERATIONS
+
+
+def _effective_verbose(args: argparse.Namespace, lm_config: Any) -> bool:
+    if getattr(args, "verbose", False):
+        return True
+    defaults = getattr(lm_config, "defaults", None)
+    return bool(defaults is not None and defaults.verbose)
 
 
 def include_path(value: str) -> Path:
@@ -46,7 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--sub-lm", help="override the configured DSPy sub-LM")
-    parser.add_argument("--max-iterations", type=int, default=30)
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help="max RLM iterations per turn; defaults to the configured value or 30",
+    )
     parser.add_argument(
         "--resume",
         metavar="SESSION_ID",
@@ -114,16 +136,18 @@ def run_tui(args: argparse.Namespace) -> int:
     from .tui import TerminalFractalApp
 
     workspace = args.workspace.resolve()
-    display_verbose = bool(getattr(args, "verbose", False))
+    display_verbose = _effective_verbose(args, lm_config)
     runtime = FractalRuntime.create(
         workspace_path=workspace,
         included_paths=args.include,
         lm=lm_config.lm,
         sub_lm=lm_config.sub_lm,
-        max_iterations=args.max_iterations,
+        max_iterations=_effective_max_iterations(args, lm_config),
         verbose=False,
         debug=args.debug,
         session_id=args.resume,
+        provider_selection=lm_config.provider_selection,
+        sub_lm_follows_main=lm_config.sub_lm_follows_main,
     )
     try:
         with console.status("[dim]starting sandbox...[/dim]", spinner="dots"):
@@ -167,7 +191,6 @@ def run_non_interactive(
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
-    display_verbose = bool(getattr(args, "verbose", False))
 
     try:
         stdin_text = read_non_interactive_stdin(args.prompt, stdin)
@@ -186,16 +209,19 @@ def run_non_interactive(
     if lm_config is None:
         return 1
 
+    display_verbose = _effective_verbose(args, lm_config)
     workspace = args.workspace.resolve()
     try:
         runtime = FractalRuntime.create(
             workspace_path=workspace,
             lm=lm_config.lm,
             sub_lm=lm_config.sub_lm,
-            max_iterations=args.max_iterations,
+            max_iterations=_effective_max_iterations(args, lm_config),
             verbose=False,
             debug=args.debug,
             session_id=args.resume,
+            provider_selection=lm_config.provider_selection,
+            sub_lm_follows_main=lm_config.sub_lm_follows_main,
         )
     except Exception as exc:
         print(f"fractal: {exc}", file=stderr)

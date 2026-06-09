@@ -237,3 +237,73 @@ api_key_env = "sk-secret-value"
 
     with pytest.raises(FractalConfigSchemaError, match="api_key_env"):
         load_config(path)
+
+
+def test_config_round_trips_sub_model_and_defaults(tmp_path: Path) -> None:
+    from fractal.config import FractalConfig, ProviderConfig, load_config, write_config
+
+    path = tmp_path / "config.toml"
+    config = FractalConfig(
+        active_provider="openai-api",
+        active_model="gpt-5.5",
+        active_sub_model="gpt-5.4-mini",
+        providers={
+            "openai-api": ProviderConfig(
+                auth_source="env",
+                api_key_env="OPENAI_API_KEY",
+            )
+        },
+        defaults={"max_iterations": 12, "verbose": True},
+    )
+
+    write_config(config, path)
+    loaded = load_config(path).config
+
+    assert loaded is not None
+    assert loaded.active_sub_model == "gpt-5.4-mini"
+    assert loaded.defaults.max_iterations == 12
+    assert loaded.defaults.verbose is True
+
+
+def test_config_omits_empty_defaults_table(tmp_path: Path) -> None:
+    from fractal.config import FractalConfig, ProviderConfig, write_config
+
+    path = tmp_path / "config.toml"
+    config = FractalConfig(
+        active_provider="openai-api",
+        active_model="gpt-5.5",
+        providers={
+            "openai-api": ProviderConfig(
+                auth_source="env",
+                api_key_env="OPENAI_API_KEY",
+            )
+        },
+    )
+
+    write_config(config, path)
+
+    assert "defaults" not in path.read_text(encoding="utf-8")
+
+
+def test_config_rejects_non_positive_max_iterations(tmp_path: Path) -> None:
+    from fractal.config import FractalConfigSchemaError, load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+schema_version = 1
+active_provider = "openai-api"
+active_model = "gpt-5.5"
+
+[providers.openai-api]
+auth_source = "env"
+api_key_env = "OPENAI_API_KEY"
+
+[defaults]
+max_iterations = 0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FractalConfigSchemaError, match="max_iterations"):
+        load_config(path)

@@ -40,7 +40,13 @@ Supported MVP providers:
 | `openai-codex` | Official Codex CLI login | `codex login --device-auth` |
 | `openai-api` | Environment variable | `OPENAI_API_KEY` |
 | `anthropic` | Environment variable | `ANTHROPIC_API_KEY` |
+| `gemini` | Environment variable | `GEMINI_API_KEY` |
+| `xai` | Environment variable | `XAI_API_KEY` |
+| `deepseek` | Environment variable | `DEEPSEEK_API_KEY` |
+| `mistral` | Environment variable | `MISTRAL_API_KEY` |
+| `groq` | Environment variable | `GROQ_API_KEY` |
 | `openrouter` | Environment variable | `OPENROUTER_API_KEY` |
+| `ollama` | Local server, no credential | `http://localhost:11434` |
 | `custom-openai-compatible` | Environment variable plus base URL | User-selected env var |
 
 `openai-codex` requires the official `codex` CLI and an existing Codex login.
@@ -49,13 +55,30 @@ adapter and does not copy Codex OAuth tokens into Fractal config. Fractal only
 offers the Codex `gpt-5.5` family during setup right now.
 
 Setup model menus are curated starting points, not exhaustive provider
-catalogs. OpenAI API setup offers the current GPT-5.5/GPT-5.4 text-output
-models that fit Fractal's coding-agent path. Anthropic setup offers Claude
-Sonnet 4.6, Opus 4.8, and Haiku 4.5. OpenRouter setup offers a small current
-coding-focused subset from its live catalog, while explicit config can still
-use another valid OpenRouter model id. Custom OpenAI-compatible endpoints keep
-a custom model entry because Fractal cannot know an endpoint-local catalog
-before the endpoint is configured.
+catalogs. Every provider except `openai-codex` also accepts a free-form model
+id (the "Custom model..." entry in menus), so newly released models work
+without a Fractal update. `ollama` talks to a local Ollama server and needs no
+API key; setup asks for the server URL and defaults to
+`http://localhost:11434`.
+
+If setup finds the chosen API-key environment variable unset, it still writes
+the config (which never contains secrets) and prints the exact variable to
+export; `fractal config status` verifies readiness afterwards.
+
+Beyond the active provider and model, the config supports:
+
+```toml
+# optional: a cheaper model for RLM sub-calls; defaults to the main model
+active_sub_model = "gpt-5.4-mini"
+
+[defaults]            # optional run defaults, overridden by CLI flags
+max_iterations = 30   # --max-iterations
+verbose = false       # --verbose
+```
+
+Inside the interactive session, `/provider` re-runs provider setup, `/model`
+switches the model for the configured provider, and `/verbose` toggles trace
+display.
 
 For one-off runs or tests, `--lm` bypasses global config resolution:
 
