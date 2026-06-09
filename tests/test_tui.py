@@ -43,6 +43,7 @@ class FakeRuntime:
         self.provider_label = "openai-api"
         self.model_label = "gpt-5.5"
         self.applied_provider_selections: list[object] = []
+        self.applied_sub_model_selections: list[object] = []
 
     @property
     def session_id(self) -> str:
@@ -61,6 +62,9 @@ class FakeRuntime:
         self.applied_provider_selections.append(selection)
         self.provider_label = selection.provider
         self.model_label = selection.model
+
+    def apply_sub_model_selection(self, selection: object) -> None:
+        self.applied_sub_model_selections.append(selection)
 
     async def submit(self, user_message: str, **kwargs: object) -> object:
         from fractal.agent.schema import FractalResult
@@ -1071,3 +1075,46 @@ def test_slash_command_completer_lists_commands() -> None:
     assert [completion.text for completion in resume] == ["/resume"]
     assert [completion.text for completion in verbose] == ["/verbose"]
     assert none_after_space == []
+
+
+def test_terminal_tui_model_sub_command_updates_sub_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+    config_path = tmp_path / "fractal" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        """
+schema_version = 1
+active_provider = "openai-api"
+active_model = "gpt-5.5"
+
+[providers.openai-api]
+auth_source = "env"
+api_key_env = "OPENAI_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO("/model sub\n3\n/exit\n"),
+    )
+
+    asyncio.run(app.run())
+
+    assert runtime.submitted == []
+    assert len(runtime.applied_sub_model_selections) == 1
+    assert runtime.applied_sub_model_selections[0].model == "gpt-5.4-mini"
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["active_model"] == "gpt-5.5"
+    assert data["active_sub_model"] == "gpt-5.4-mini"
+    assert "Sub-model updated for this session." in normalized_output(
+        output.getvalue()
+    )

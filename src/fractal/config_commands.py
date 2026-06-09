@@ -167,7 +167,11 @@ def config_setup(
     # wrong and nothing should be written.
     credential_warning: str | None = None
     try:
-        config = prompt_for_config(stdin=stdin, stdout=stdout)
+        config = prompt_for_config(
+            stdin=stdin,
+            stdout=stdout,
+            existing=_existing_config_for_setup(),
+        )
         selection = selection_from_config(config)
         try:
             check_provider_readiness(selection)
@@ -206,6 +210,20 @@ def config_setup(
                 file=stderr,
             )
     return 0
+
+
+def _existing_config_for_setup() -> Any | None:
+    """Best-effort load of the current global config so setup can merge.
+
+    A corrupt config means setup is repairing it, so merging is impossible
+    and starting fresh is the right call.
+    """
+    from .config import FractalConfigError, load_config
+
+    try:
+        return load_config().config
+    except FractalConfigError:
+        return None
 
 
 def config_get(

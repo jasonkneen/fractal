@@ -36,7 +36,7 @@ PROMPT_STYLE = Style.from_dict(
     }
 )
 SLASH_COMMANDS = {
-    "/model": "Change the model for the current provider",
+    "/model": "Change the model (`/model sub` changes the sub-model)",
     "/provider": "Change provider, model, and auth setup",
     "/resume": "Resume an existing session by id",
     "/verbose": "Toggle verbose trace display for this session",
@@ -126,6 +126,8 @@ class FractalRuntimeLike(Protocol):
     def model_label(self) -> str: ...
 
     def apply_provider_selection(self, selection: object) -> None: ...
+
+    def apply_sub_model_selection(self, selection: object) -> None: ...
 
     async def submit(self, user_message: str, **kwargs: object) -> FractalResult: ...
 
@@ -354,8 +356,15 @@ class TerminalFractalApp:
         return True
 
     async def handle_model_command(self, rest: str) -> bool:
-        if rest.strip():
-            self.console.print(Text("usage: /model", style="yellow"))
+        mode = rest.strip().lower()
+        if mode == "sub":
+            if await self.run_sub_model_setup():
+                self.console.print(
+                    Text("Sub-model updated for this session.", style="dim")
+                )
+            return True
+        if mode:
+            self.console.print(Text("usage: /model [sub]", style="yellow"))
             return True
 
         if await self.run_model_setup():
@@ -389,9 +398,11 @@ class TerminalFractalApp:
         from fractal.runtime_lms import selection_from_config
 
         try:
+            existing = _existing_config()
             config = await async_prompt_for_config(
                 stdin=self.config_stdin,
                 stdout=self.config_stdout,
+                existing=existing,
             )
             selection = selection_from_config(config)
             self.runtime.apply_provider_selection(selection)
@@ -432,6 +443,42 @@ class TerminalFractalApp:
             print(f"fractal model setup: {exc}", file=self.config_stderr)
             print(
                 "No config was written. Fix the issue, then run `/model` again.",
+                file=self.config_stderr,
+            )
+            return False
+
+        print(f"Fractal config written to {path}", file=self.config_stdout)
+        return True
+
+    async def run_sub_model_setup(self) -> bool:
+        from dataclasses import replace
+
+        from fractal.config import FractalConfigError, load_config, write_config
+        from fractal.onboarding import SetupInputError, async_prompt_for_model
+        from fractal.providers import ProviderError, get_provider
+        from fractal.runtime_lms import selection_from_config
+
+        try:
+            result = load_config()
+            if result.config is None:
+                raise SetupInputError("no config found; run `/provider` first")
+            provider = get_provider(result.config.active_provider)
+            model = await async_prompt_for_model(
+                provider=provider,
+                stdin=self.config_stdin,
+                stdout=self.config_stdout,
+            )
+            config = result.config.model_copy(update={"active_sub_model": model})
+            selection = replace(
+                selection_from_config(config, path=result.path),
+                model=model,
+            )
+            self.runtime.apply_sub_model_selection(selection)
+            path = write_config(config, path=result.path)
+        except (FractalConfigError, ProviderError, SetupInputError, ValueError) as exc:
+            print(f"fractal sub-model setup: {exc}", file=self.config_stderr)
+            print(
+                "No config was written. Fix the issue, then run `/model sub` again.",
                 file=self.config_stderr,
             )
             return False
@@ -638,6 +685,15 @@ def render_user_message(message: str) -> Group:
 
 def render_prompt_label() -> Text:
     return Text.assemble(("fractal", "bold #8b5cf6"), ("›", "bright_black"), " ")
+
+
+def _existing_config() -> object | None:
+    from fractal.config import FractalConfigError, load_config
+
+    try:
+        return load_config().config
+    except FractalConfigError:
+        return None
 
 
 def _will_submit_turn(message: str) -> bool:

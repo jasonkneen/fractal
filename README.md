@@ -109,9 +109,17 @@ max_iterations = 30   # --max-iterations
 verbose = false       # --verbose
 ```
 
+The config can hold several provider profiles at once. Setup merges into the
+existing `providers` table instead of replacing it, marks already-configured
+providers in the menu, defaults to the active one, and offers to keep their
+saved auth — so switching back to a configured provider is just two prompts
+(provider, model), and `fractal config set active_provider <id>` switches
+non-interactively. Switching providers clears `active_sub_model`; run
+defaults are preserved.
+
 Inside the interactive session, `/provider` re-runs provider setup, `/model`
-switches the model for the configured provider, and `/verbose` toggles trace
-display.
+switches the model for the configured provider (`/model sub` picks the
+sub-model), and `/verbose` toggles trace display.
 
 For one-off runs or tests, `--lm` bypasses global config resolution:
 

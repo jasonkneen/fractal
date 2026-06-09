@@ -59,16 +59,28 @@ class InlineMenuState:
         return self.choices[self.selected_index].value
 
 
-def prompt_for_config(*, stdin: TextIO, stdout: TextIO) -> Any:
+def prompt_for_config(
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    existing: Any | None = None,
+) -> Any:
     if _should_use_inline_menu(stdin=stdin, stdout=stdout):
-        return _prompt_for_config_interactive(stdout=stdout)
-    return _prompt_for_config_line(stdin=stdin, stdout=stdout)
+        return _prompt_for_config_interactive(stdout=stdout, existing=existing)
+    return _prompt_for_config_line(stdin=stdin, stdout=stdout, existing=existing)
 
 
-async def async_prompt_for_config(*, stdin: TextIO, stdout: TextIO) -> Any:
+async def async_prompt_for_config(
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    existing: Any | None = None,
+) -> Any:
     if _should_use_inline_menu(stdin=stdin, stdout=stdout):
-        return await _prompt_for_config_interactive_async(stdout=stdout)
-    return _prompt_for_config_line(stdin=stdin, stdout=stdout)
+        return await _prompt_for_config_interactive_async(
+            stdout=stdout, existing=existing
+        )
+    return _prompt_for_config_line(stdin=stdin, stdout=stdout, existing=existing)
 
 
 def prompt_for_model(*, provider: Any, stdin: TextIO, stdout: TextIO) -> str:
@@ -88,8 +100,58 @@ async def async_prompt_for_model(
     return _prompt_model_line(stdin=stdin, stdout=stdout, provider=provider)
 
 
-def _prompt_for_config_interactive(*, stdout: TextIO) -> Any:
+def _provider_menu_choices(providers: list[Any], existing: Any | None) -> list[MenuChoice]:
+    configured = set(existing.providers) if existing is not None else set()
+    choices = []
+    for provider in providers:
+        detail = f"{provider.id} - default model {provider.default_model}"
+        if provider.id in configured:
+            detail += " (configured)"
+        choices.append(
+            MenuChoice(value=provider.id, label=provider.display_name, detail=detail)
+        )
+    return choices
+
+
+def _default_provider_id(providers: list[Any], existing: Any | None) -> str:
+    if existing is not None and any(
+        provider.id == existing.active_provider for provider in providers
+    ):
+        return existing.active_provider
+    return providers[0].id
+
+
+def _merged_config(
+    *,
+    existing: Any | None,
+    provider: Any,
+    model: str,
+    provider_config: Any,
+) -> Any:
     from .config import FractalConfig
+
+    providers = dict(existing.providers) if existing is not None else {}
+    providers[provider.id] = provider_config
+    # A sub-model only stays meaningful while the provider stays the same.
+    sub_model = None
+    defaults = None
+    if existing is not None:
+        defaults = existing.defaults
+        if existing.active_provider == provider.id:
+            sub_model = existing.active_sub_model
+    kwargs: dict[str, Any] = {}
+    if defaults is not None:
+        kwargs["defaults"] = defaults
+    return FractalConfig(
+        active_provider=provider.id,
+        active_model=model,
+        active_sub_model=sub_model,
+        providers=providers,
+        **kwargs,
+    )
+
+
+def _prompt_for_config_interactive(*, stdout: TextIO, existing: Any | None = None) -> Any:
     from .providers import get_provider, list_providers
 
     providers = list_providers()
@@ -97,31 +159,32 @@ def _prompt_for_config_interactive(*, stdout: TextIO) -> Any:
     provider_id = _choose_from_menu(
         title="Fractal setup",
         text="Choose a provider. Use the arrow keys to move and Enter to select.",
-        choices=[
-            MenuChoice(
-                value=provider.id,
-                label=provider.display_name,
-                detail=f"{provider.id} - default model {provider.default_model}",
-            )
-            for provider in providers
-        ],
-        default=providers[0].id,
+        choices=_provider_menu_choices(providers, existing),
+        default=_default_provider_id(providers, existing),
     )
     provider = get_provider(provider_id)
     model = _choose_model(provider=provider, stdout=stdout)
-    provider_config = _prompt_provider_settings_interactive(
-        provider_id=provider.id,
-        stdout=stdout,
-    )
-    return FractalConfig(
-        active_provider=provider.id,
-        active_model=model,
-        providers={provider.id: provider_config},
+    saved = existing.providers.get(provider.id) if existing is not None else None
+    if saved is not None and _reuse_saved_auth_interactive(provider=provider):
+        provider_config = saved
+    else:
+        provider_config = _prompt_provider_settings_interactive(
+            provider_id=provider.id,
+            stdout=stdout,
+        )
+    return _merged_config(
+        existing=existing,
+        provider=provider,
+        model=model,
+        provider_config=provider_config,
     )
 
 
-async def _prompt_for_config_interactive_async(*, stdout: TextIO) -> Any:
-    from .config import FractalConfig
+async def _prompt_for_config_interactive_async(
+    *,
+    stdout: TextIO,
+    existing: Any | None = None,
+) -> Any:
     from .providers import get_provider, list_providers
 
     providers = list_providers()
@@ -129,57 +192,77 @@ async def _prompt_for_config_interactive_async(*, stdout: TextIO) -> Any:
     provider_id = await _choose_from_menu_async(
         title="Fractal setup",
         text="Choose a provider. Use the arrow keys to move and Enter to select.",
-        choices=[
-            MenuChoice(
-                value=provider.id,
-                label=provider.display_name,
-                detail=f"{provider.id} - default model {provider.default_model}",
-            )
-            for provider in providers
-        ],
-        default=providers[0].id,
+        choices=_provider_menu_choices(providers, existing),
+        default=_default_provider_id(providers, existing),
     )
     provider = get_provider(provider_id)
     model = await _choose_model_async(provider=provider, stdout=stdout)
-    provider_config = await _prompt_provider_settings_interactive_async(
-        provider_id=provider.id,
-        stdout=stdout,
-    )
-    return FractalConfig(
-        active_provider=provider.id,
-        active_model=model,
-        providers={provider.id: provider_config},
+    saved = existing.providers.get(provider.id) if existing is not None else None
+    if saved is not None and await _reuse_saved_auth_interactive_async(
+        provider=provider
+    ):
+        provider_config = saved
+    else:
+        provider_config = await _prompt_provider_settings_interactive_async(
+            provider_id=provider.id,
+            stdout=stdout,
+        )
+    return _merged_config(
+        existing=existing,
+        provider=provider,
+        model=model,
+        provider_config=provider_config,
     )
 
 
-def _prompt_for_config_line(*, stdin: TextIO, stdout: TextIO) -> Any:
-    from .config import FractalConfig
+def _prompt_for_config_line(
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    existing: Any | None = None,
+) -> Any:
     from .providers import list_providers
 
     providers = list_providers()
+    configured = set(existing.providers) if existing is not None else set()
     print("Fractal global config setup", file=stdout)
     print("Choose a provider:", file=stdout)
     for index, provider in enumerate(providers, start=1):
         model_options = ", ".join(provider.model_options)
+        configured_note = " (configured)" if provider.id in configured else ""
         print(
-            f"{index}. {provider.display_name} ({provider.id})",
+            f"{index}. {provider.display_name} ({provider.id}){configured_note}",
             file=stdout,
         )
         print(f"   default model: {provider.default_model}", file=stdout)
         if model_options:
             print(f"   model options: {model_options}", file=stdout)
 
-    provider = _prompt_provider_line(stdin=stdin, stdout=stdout, providers=providers)
-    model = _prompt_model_line(stdin=stdin, stdout=stdout, provider=provider)
-    provider_config = _prompt_provider_settings_line(
+    provider = _prompt_provider_line(
         stdin=stdin,
         stdout=stdout,
-        provider_id=provider.id,
+        providers=providers,
+        default_provider_id=_default_provider_id(providers, existing),
     )
-    return FractalConfig(
-        active_provider=provider.id,
-        active_model=model,
-        providers={provider.id: provider_config},
+    model = _prompt_model_line(stdin=stdin, stdout=stdout, provider=provider)
+    saved = existing.providers.get(provider.id) if existing is not None else None
+    if saved is not None and _prompt_yes_no_line(
+        stdin=stdin,
+        stdout=stdout,
+        label=f"Use saved auth settings for {provider.display_name}?",
+    ):
+        provider_config = saved
+    else:
+        provider_config = _prompt_provider_settings_line(
+            stdin=stdin,
+            stdout=stdout,
+            provider_id=provider.id,
+        )
+    return _merged_config(
+        existing=existing,
+        provider=provider,
+        model=model,
+        provider_config=provider_config,
     )
 
 
@@ -188,6 +271,7 @@ def _prompt_provider_line(
     stdin: TextIO,
     stdout: TextIO,
     providers: list[Any],
+    default_provider_id: str | None = None,
 ) -> Any:
     from .providers import get_provider
 
@@ -200,7 +284,7 @@ def _prompt_provider_line(
             stdin=stdin,
             stdout=stdout,
             label="Provider number or id",
-            default=providers[0].id,
+            default=default_provider_id or providers[0].id,
         )
         if answer in provider_by_index:
             return provider_by_index[answer]
@@ -460,6 +544,72 @@ def _prompt_key_source_line(*, stdin: TextIO, stdout: TextIO, provider: Any) -> 
         if answer in {"2", KEY_SOURCE_ENV}:
             return KEY_SOURCE_ENV
         print("Choose 1 (paste) or 2 (environment variable).", file=stdout)
+
+
+def _prompt_yes_no_line(
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    label: str,
+    default: bool = True,
+) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    while True:
+        answer = _prompt(
+            stdin=stdin,
+            stdout=stdout,
+            label=f"{label} [{suffix}]",
+        ).lower()
+        if not answer:
+            return default
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        print("Answer y or n.", file=stdout)
+
+
+_REUSE_AUTH = "reuse"
+_RECONFIGURE_AUTH = "reconfigure"
+
+
+def _reuse_auth_menu_choices(provider: Any) -> list[MenuChoice]:
+    return [
+        MenuChoice(
+            value=_REUSE_AUTH,
+            label="Keep saved auth settings",
+            detail="reuse the credentials already configured for this provider",
+        ),
+        MenuChoice(
+            value=_RECONFIGURE_AUTH,
+            label="Reconfigure auth",
+            detail="enter a new API key or change the auth source",
+        ),
+    ]
+
+
+def _reuse_saved_auth_interactive(*, provider: Any) -> bool:
+    return (
+        _choose_from_menu(
+            title=f"{provider.display_name} auth",
+            text="This provider is already configured.",
+            choices=_reuse_auth_menu_choices(provider),
+            default=_REUSE_AUTH,
+        )
+        == _REUSE_AUTH
+    )
+
+
+async def _reuse_saved_auth_interactive_async(*, provider: Any) -> bool:
+    return (
+        await _choose_from_menu_async(
+            title=f"{provider.display_name} auth",
+            text="This provider is already configured.",
+            choices=_reuse_auth_menu_choices(provider),
+            default=_REUSE_AUTH,
+        )
+        == _REUSE_AUTH
+    )
 
 
 def _store_pasted_key(*, provider_id: str, api_key: str, stdout: TextIO) -> None:

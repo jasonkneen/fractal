@@ -129,6 +129,13 @@ class FractalRuntime:
             setattr(self.agent, "sub_lm", lm)
         self.provider_selection = selection
 
+    def apply_sub_model_selection(self, selection: ProviderSelection) -> None:
+        from .providers import build_lm, check_provider_readiness
+
+        check_provider_readiness(selection)
+        setattr(self.agent, "sub_lm", build_lm(selection))
+        self.sub_lm_follows_main = False
+
     @property
     def turns(self) -> list[SummaryTurn]:
         return self.session.turns
