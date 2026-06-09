@@ -104,9 +104,9 @@ def _provider_menu_choices(providers: list[Any], existing: Any | None) -> list[M
     configured = set(existing.providers) if existing is not None else set()
     choices = []
     for provider in providers:
-        detail = f"{provider.id} - default model {provider.default_model}"
+        detail = f"{provider.id} · default model {provider.default_model}"
         if provider.id in configured:
-            detail += " (configured)"
+            detail += " · configured"
         choices.append(
             MenuChoice(value=provider.id, label=provider.display_name, detail=detail)
         )
@@ -530,12 +530,12 @@ def _key_source_menu_choices(provider: Any) -> list[MenuChoice]:
         MenuChoice(
             value=KEY_SOURCE_PASTE,
             label="Paste API key now",
-            detail="stored locally in Fractal's credentials file, never in config",
+            detail="Saved to a private local file, never to the config",
         ),
         MenuChoice(
             value=KEY_SOURCE_ENV,
             label="Use an environment variable",
-            detail=f"reference a variable like {provider.default_api_key_env}",
+            detail=f"Read from a variable like {provider.default_api_key_env}",
         ),
     ]
 
@@ -593,12 +593,12 @@ def _reuse_auth_menu_choices(provider: Any) -> list[MenuChoice]:
         MenuChoice(
             value=_REUSE_AUTH,
             label="Keep saved auth settings",
-            detail="reuse the credentials already configured for this provider",
+            detail="Use the credentials already saved for this provider",
         ),
         MenuChoice(
             value=_RECONFIGURE_AUTH,
             label="Reconfigure auth",
-            detail="enter a new API key or change the auth source",
+            detail="Enter a new API key or change how it is provided",
         ),
     ]
 
@@ -667,7 +667,7 @@ def _choose_model(*, provider: Any, stdout: TextIO) -> str:
         MenuChoice(
             value=model,
             label=model,
-            detail="installed" if model in installed else None,
+            detail="Installed on your Ollama server" if model in installed else None,
         )
         for model in choices
     ]
@@ -701,7 +701,7 @@ async def _choose_model_async(*, provider: Any, stdout: TextIO) -> str:
         MenuChoice(
             value=model,
             label=model,
-            detail="installed" if model in installed else None,
+            detail="Installed on your Ollama server" if model in installed else None,
         )
         for model in choices
     ]
@@ -901,7 +901,7 @@ def _is_tty(stream: TextIO) -> bool:
 def _choice_fragments(choice: MenuChoice) -> list[tuple[str, str]]:
     fragments = [("bold", choice.label)]
     if choice.detail:
-        fragments.extend([("", " "), ("class:muted", choice.detail)])
+        fragments.extend([("", "  "), ("class:muted", f"— {choice.detail}")])
     return fragments
 
 
