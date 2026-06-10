@@ -42,6 +42,14 @@ def run_config_command(
             project=bool(getattr(args, "project", False)),
             workspace=workspace,
         )
+    if args.config_command == "reset":
+        return config_reset(
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            credentials=bool(getattr(args, "credentials", False)),
+            assume_yes=bool(getattr(args, "yes", False)),
+        )
     if args.config_command == "unset":
         return config_unset(
             args.key,
@@ -108,6 +116,19 @@ def config_status(
         return 1
 
     selection = selection_from_config(result.config, path=result.path)
+    _check_model_against_catalog(
+        result.config.active_provider,
+        result.config.active_model,
+        label="active_model",
+        stderr=stderr,
+    )
+    if result.config.active_sub_model is not None:
+        _check_model_against_catalog(
+            result.config.active_provider,
+            result.config.active_sub_model,
+            label="active_sub_model",
+            stderr=stderr,
+        )
     try:
         check_provider_readiness(selection)
     except ProviderError as exc:
@@ -226,6 +247,64 @@ def _existing_config_for_setup() -> Any | None:
         return None
 
 
+def config_reset(
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    stderr: TextIO,
+    credentials: bool = False,
+    assume_yes: bool = False,
+) -> int:
+    from .config import FractalConfigError, default_config_path
+    from .credentials import (
+        default_credentials_path,
+        delete_credential,
+        load_stored_credentials,
+    )
+
+    config_path = default_config_path()
+    credentials_path = default_credentials_path()
+    targets = [path for path in (config_path,) if path.exists()]
+    if credentials and credentials_path.exists():
+        targets.append(credentials_path)
+
+    if not targets:
+        print("fractal config: nothing to reset", file=stdout)
+        return 0
+
+    if not assume_yes:
+        print("This will delete:", file=stdout)
+        for path in targets:
+            note = " (stored API keys)" if path == credentials_path else ""
+            print(f"  {path}{note}", file=stdout)
+        print("Continue? [y/N]: ", file=stdout, end="", flush=True)
+        answer = stdin.readline().strip().lower()
+        if answer not in {"y", "yes"}:
+            print("fractal config: reset aborted", file=stdout)
+            return 1
+
+    try:
+        if config_path.exists():
+            config_path.unlink()
+            print(f"deleted {config_path}", file=stdout)
+        if credentials and credentials_path.exists():
+            # Clear each stored key before removing the file so a corrupt
+            # credentials file still gets deleted instead of blocking reset.
+            try:
+                for provider_id in load_stored_credentials(credentials_path):
+                    delete_credential(provider_id, credentials_path)
+            except FractalConfigError:
+                pass
+            credentials_path.unlink()
+            print(f"deleted {credentials_path}", file=stdout)
+    except OSError as exc:
+        print(f"fractal config: reset failed: {exc}", file=stderr)
+        return 1
+
+    print("Run `fractal config setup` to configure Fractal again.", file=stdout)
+    return 0
+
+
 def config_get(
     key: str,
     *,
@@ -282,6 +361,19 @@ def config_set(
             data = current.model_dump(mode="python", exclude_none=True)
             _set_config_path(data, key, value)
             updated = ProjectFractalConfig.model_validate(data)
+            if key in {"active_model", "active_sub_model"}:
+                provider_id = updated.active_provider
+                if provider_id is None:
+                    try:
+                        global_config = load_config().config
+                    except FractalConfigError:
+                        global_config = None
+                    if global_config is not None:
+                        provider_id = global_config.active_provider
+                if provider_id is not None and not _check_model_against_catalog(
+                    provider_id, str(value), label=key, stderr=stderr
+                ):
+                    return 1
             path = write_project_config(updated, target_workspace)
         else:
             result = load_config()
@@ -295,6 +387,12 @@ def config_set(
             data = result.config.model_dump(mode="python", exclude_none=True)
             _set_config_path(data, key, value)
             updated = FractalConfig.model_validate(data)
+            if key in {"active_model", "active_sub_model"} and not (
+                _check_model_against_catalog(
+                    updated.active_provider, str(value), label=key, stderr=stderr
+                )
+            ):
+                return 1
             path = write_config(updated, path=result.path)
     except FractalConfigError as exc:
         print(f"fractal config: {exc}", file=stderr)
@@ -360,6 +458,48 @@ def config_unset(
 
     print(f"unset {key} in {path}", file=stdout)
     return 0
+
+
+def _check_model_against_catalog(
+    provider_id: str,
+    model: str,
+    *,
+    label: str,
+    stderr: TextIO,
+) -> bool:
+    """Validate a model id against the provider's catalog.
+
+    Returns False only when the provider restricts model ids and this one is
+    not allowed. Unknown models on custom-friendly providers (and unknown
+    providers) only warn, since the catalog is a suggestion, not a contract.
+    """
+    from .providers import UnknownProviderError, get_provider
+
+    try:
+        provider = get_provider(provider_id)
+    except UnknownProviderError:
+        return True
+    known = {
+        provider.default_model,
+        *provider.model_options,
+        *provider.restricted_models,
+    }
+    if model in known:
+        return True
+    if not provider.allows_custom_model:
+        allowed = ", ".join(provider.restricted_models)
+        print(
+            f"fractal config: {model!r} is not supported by "
+            f"{provider_id} (supported: {allowed})",
+            file=stderr,
+        )
+        return False
+    print(
+        f"warning: {model!r} ({label}) is not in the known "
+        f"{provider_id} catalog; make sure the provider supports it",
+        file=stderr,
+    )
+    return True
 
 
 def _parse_config_value(raw: str) -> Any:

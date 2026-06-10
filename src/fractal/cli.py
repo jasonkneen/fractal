@@ -156,6 +156,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="write to the workspace project config instead of the global config",
     )
+    reset_parser = config_subparsers.add_parser(
+        "reset",
+        help="delete the global config so setup can start fresh",
+    )
+    reset_parser.add_argument(
+        "--credentials",
+        action="store_true",
+        help="also delete locally stored API keys",
+    )
+    reset_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="skip the confirmation prompt",
+    )
     unset_parser = config_subparsers.add_parser(
         "unset",
         help="remove one config value by dotted key",

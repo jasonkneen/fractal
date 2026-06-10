@@ -60,6 +60,18 @@ uv run fractal config set active_model gpt-5.4 --project
 uv run fractal config unset active_sub_model
 ```
 
+Setting `active_model` or `active_sub_model` warns when the model is not in
+the provider's known catalog, and refuses ids the provider restricts.
+
+To start over, `config reset` deletes the global config after confirmation
+(`--yes` skips the prompt); add `--credentials` to also delete locally stored
+API keys. Project configs are never touched by reset:
+
+```bash
+uv run fractal config reset
+uv run fractal config reset --credentials --yes
+```
+
 The default config path is `~/.config/fractal/config.toml`, or
 `$XDG_CONFIG_HOME/fractal/config.toml` when `XDG_CONFIG_HOME` is set. The config
 stores provider ids, model names, auth source metadata, API-key environment

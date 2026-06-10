@@ -945,6 +945,49 @@ api_key_env = "OPENAI_API_KEY"
     assert data["active_model"] == "gpt-5.4"
 
 
+def test_terminal_tui_model_command_warns_when_project_config_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+    config_path = tmp_path / "fractal" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        """
+schema_version = 1
+active_provider = "openai-api"
+active_model = "gpt-5.5"
+
+[providers.openai-api]
+auth_source = "env"
+api_key_env = "OPENAI_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+    project_path = tmp_path / ".fractal" / "config.toml"
+    project_path.parent.mkdir(parents=True)
+    project_path.write_text(
+        'schema_version = 1\nactive_model = "gpt-5.4-mini"\n',
+        encoding="utf-8",
+    )
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(
+        runtime,
+        console=console,
+        input_stream=StringIO("/model\n2\n\n/exit\n"),
+    )
+
+    asyncio.run(app.run())
+
+    text = normalized_output(output.getvalue())
+    assert "overrides active_model" in text
+    assert "project value wins on next launch" in text
+
+
 def test_terminal_tui_provider_setup_uses_in_process_onboarding(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1067,6 +1110,7 @@ def test_terminal_tui_verbose_command_toggles_session_verbosity(tmp_path: Path) 
     text = output.getvalue()
     assert "verbose iteration output on" in text
     assert "verbose iteration output off" in text
+    assert "fractal config set defaults.verbose" in normalized_output(text)
     assert "usage: /verbose [on|off]" in text
 
 

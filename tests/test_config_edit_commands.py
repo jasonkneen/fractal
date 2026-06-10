@@ -24,13 +24,18 @@ api_key_env = "{api_key_env}"
     return path
 
 
-def run_config(args_list: list[str]) -> tuple[int, str, str]:
+def run_config(args_list: list[str], stdin_text: str = "") -> tuple[int, str, str]:
     from fractal import cli
 
     args = cli.build_parser().parse_args(args_list)
     stdout = StringIO()
     stderr = StringIO()
-    exit_code = cli.run_config_command(args, stdout=stdout, stderr=stderr)
+    exit_code = cli.run_config_command(
+        args,
+        stdin=StringIO(stdin_text),
+        stdout=stdout,
+        stderr=stderr,
+    )
     return exit_code, stdout.getvalue(), stderr.getvalue()
 
 
@@ -160,3 +165,124 @@ def test_config_set_without_global_config_requires_setup(
 
     assert exit_code == 1
     assert "fractal config setup" in stderr
+
+
+def test_config_reset_deletes_global_config_after_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config_path = write_api_config(tmp_path)
+
+    exit_code, stdout, _ = run_config(["config", "reset"], stdin_text="y\n")
+
+    assert exit_code == 0
+    assert not config_path.exists()
+    assert f"deleted {config_path}" in stdout
+    assert "fractal config setup" in stdout
+
+    exit_code, stdout, _ = run_config(["config", "reset"], stdin_text="y\n")
+    assert exit_code == 0
+    assert "nothing to reset" in stdout
+
+
+def test_config_reset_aborts_without_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config_path = write_api_config(tmp_path)
+
+    exit_code, stdout, _ = run_config(["config", "reset"], stdin_text="n\n")
+
+    assert exit_code == 1
+    assert config_path.exists()
+    assert "aborted" in stdout
+
+
+def test_config_reset_credentials_flag_removes_stored_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.credentials import default_credentials_path, store_credential
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config_path = write_api_config(tmp_path)
+    store_credential("openai-api", "sk-secret")
+    credentials_path = default_credentials_path()
+    assert credentials_path.exists()
+
+    # Without --credentials the stored keys survive.
+    exit_code, _, _ = run_config(["config", "reset", "--yes"])
+    assert exit_code == 0
+    assert not config_path.exists()
+    assert credentials_path.exists()
+
+    write_api_config(tmp_path)
+    exit_code, stdout, _ = run_config(["config", "reset", "--credentials", "--yes"])
+
+    assert exit_code == 0
+    assert not config_path.exists()
+    assert not credentials_path.exists()
+    assert f"deleted {credentials_path}" in stdout
+
+
+def test_config_set_warns_on_model_outside_provider_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config_path = write_api_config(tmp_path)
+
+    exit_code, _, stderr = run_config(["config", "set", "active_model", "bogus-model"])
+
+    assert exit_code == 0
+    assert "not in the known openai-api catalog" in stderr
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["active_model"] == "bogus-model"
+
+
+def test_config_set_rejects_model_for_restricted_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config_path = tmp_path / "fractal" / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        """
+schema_version = 1
+active_provider = "openai-codex"
+active_model = "gpt-5.5"
+
+[providers.openai-codex]
+auth_source = "codex-cli"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    exit_code, _, stderr = run_config(["config", "set", "active_model", "gpt-4o"])
+
+    assert exit_code == 1
+    assert "not supported by openai-codex" in stderr
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["active_model"] == "gpt-5.5"
+
+
+def test_config_status_notes_model_outside_provider_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+    config_path = write_api_config(tmp_path)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace("gpt-5.5", "bogus-model"),
+        encoding="utf-8",
+    )
+
+    exit_code, stdout, stderr = run_config(["config", "status", "--offline"])
+
+    assert exit_code == 0
+    assert "Fractal config status: ok" in stdout
+    assert "not in the known openai-api catalog" in stderr

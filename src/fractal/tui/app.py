@@ -585,6 +585,9 @@ class TerminalFractalApp:
                     style="dim",
                 )
             )
+            self._warn_project_override(
+                ("active_provider", "active_model", "active_sub_model")
+            )
         return True
 
     async def handle_model_command(self, rest: str) -> bool:
@@ -600,7 +603,30 @@ class TerminalFractalApp:
                     style="dim",
                 )
             )
+            self._warn_project_override(("active_model", "active_sub_model"))
         return True
+
+    def _warn_project_override(self, keys: tuple[str, ...]) -> None:
+        """Warn when a project config will mask a change saved globally."""
+        from fractal.config import load_project_config, project_config_path
+
+        try:
+            project = load_project_config(self.runtime.workspace_path)
+        except Exception:
+            return
+        if project is None:
+            return
+        overridden = [key for key in keys if getattr(project, key, None) is not None]
+        if not overridden:
+            return
+        path = project_config_path(self.runtime.workspace_path)
+        self.console.print(
+            Text(
+                f"note: {path} overrides {', '.join(overridden)}; the saved "
+                "default applies now but the project value wins on next launch.",
+                style="yellow",
+            )
+        )
 
     def handle_verbose_command(self, rest: str) -> bool:
         mode = rest.strip().lower()
@@ -615,6 +641,14 @@ class TerminalFractalApp:
             return True
         state = "on" if self.verbose_iterations else "off"
         self.console.print(Text(f"verbose iteration output {state}", style="dim"))
+        self.console.print(
+            Text(
+                "applies to this session only; persist with "
+                "`fractal config set defaults.verbose "
+                f"{'true' if self.verbose_iterations else 'false'}`",
+                style="dim",
+            )
+        )
         return True
 
     async def run_provider_setup(self) -> bool:
