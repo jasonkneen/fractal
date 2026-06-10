@@ -64,8 +64,14 @@ class FakeRuntime:
         self.session = FractalSession.load(self.workspace_path, session_id=session_id)
 
     def apply_provider_selection(
-        self, selection: object, *, sub_model: str | None = None
+        self,
+        selection: object,
+        *,
+        sub_model: str | None = None,
+        sub_selection: object | None = None,
     ) -> None:
+        if sub_model is None and sub_selection is not None:
+            sub_model = sub_selection.model
         self.applied_provider_selections.append((selection, sub_model))
         self.provider_label = selection.provider
         self.model_label = selection.model
@@ -858,7 +864,7 @@ def test_terminal_tui_provider_command_runs_setup(
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
     runtime = FakeRuntime(tmp_path)
     console, output = capture_console()
-    input_stream = StringIO("/provider\n2\n1\n\n2\n\n/exit\n")
+    input_stream = StringIO("/provider\n2\n1\n\n\n2\n\n/exit\n")
     app = TerminalFractalApp(
         runtime,
         console=console,

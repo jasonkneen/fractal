@@ -117,7 +117,7 @@ def test_config_setup_api_provider_writes_non_secret_toml(
 
     exit_code = cli.run_config_command(
         args,
-        stdin=StringIO("openai-api\ngpt-5.5\n\n2\n\n"),
+        stdin=StringIO("openai-api\ngpt-5.5\n\n\n2\n\n"),
         stdout=stdout,
         stderr=stderr,
     )
@@ -145,7 +145,7 @@ def test_line_setup_accepts_numbered_provider_and_model_choices() -> None:
     from fractal.onboarding import prompt_for_config
 
     config = prompt_for_config(
-        stdin=StringIO("2\n2\n\n2\n\n"),
+        stdin=StringIO("2\n2\n\n\n2\n\n"),
         stdout=StringIO(),
     )
 
@@ -202,6 +202,8 @@ def test_inline_setup_uses_provider_and_model_menus(
         calls.append(kwargs)
         if kwargs["title"] == "Fractal setup":
             return "openai-api"
+        if kwargs["title"] == "Sub-model provider":
+            return onboarding.SUB_PROVIDER_FOLLOWS_MAIN
         if kwargs["title"] == "OpenAI API API key":
             return onboarding.KEY_SOURCE_ENV
         return "gpt-5.4-mini"
@@ -226,12 +228,13 @@ def test_inline_setup_uses_provider_and_model_menus(
     assert [call["title"] for call in calls] == [
         "Fractal setup",
         "OpenAI API model",
+        "Sub-model provider",
         "OpenAI API sub-model",
         "OpenAI API API key",
     ]
     provider_values = [choice.value for choice in calls[0]["choices"]]
     model_values = [choice.value for choice in calls[1]["choices"]]
-    sub_model_values = [choice.value for choice in calls[2]["choices"]]
+    sub_model_values = [choice.value for choice in calls[3]["choices"]]
     assert "openai-api" in provider_values
     assert model_values == [
         "gpt-5.5",
@@ -253,6 +256,8 @@ def test_inline_setup_allows_custom_openai_model_entry(
     def fake_choose_from_menu(**kwargs: object) -> str:
         if kwargs["title"] == "Fractal setup":
             return "custom-openai-compatible"
+        if kwargs["title"] == "Sub-model provider":
+            return onboarding.SUB_PROVIDER_FOLLOWS_MAIN
         model_choices.extend(choice.value for choice in kwargs["choices"])
         return onboarding.CUSTOM_MODEL_SENTINEL
 
@@ -300,7 +305,7 @@ def test_config_setup_custom_invalid_url_does_not_write_config(
     exit_code = cli.run_config_command(
         args,
         stdin=StringIO(
-            "custom-openai-compatible\ncustom-model\n\nnot-a-url\n2\nCUSTOM_OPENAI_API_KEY\n"
+            "custom-openai-compatible\ncustom-model\n\n\nnot-a-url\n2\nCUSTOM_OPENAI_API_KEY\n"
         ),
         stdout=StringIO(),
         stderr=stderr,
@@ -324,7 +329,7 @@ def test_config_setup_codex_provider_writes_codex_cli_source(
 
     exit_code = cli.run_config_command(
         args,
-        stdin=StringIO("openai-codex\n\n\n"),
+        stdin=StringIO("openai-codex\n\n\n\n"),
         stdout=StringIO(),
         stderr=StringIO(),
     )
@@ -380,7 +385,7 @@ def test_resolve_runtime_lms_auto_setup_on_missing_config(
 
     lm_config = cli.resolve_runtime_lms(
         args,
-        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\n2\n\n"),
+        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\n\n2\n\n"),
         stdout=StringIO(),
         stderr=stderr,
         auto_setup=True,
@@ -528,7 +533,7 @@ def test_config_setup_writes_config_and_warns_when_key_env_missing(
 
     exit_code = cli.run_config_command(
         args,
-        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\n2\n\n"),
+        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\n\n2\n\n"),
         stdout=stdout,
         stderr=stderr,
     )
@@ -553,7 +558,7 @@ def test_config_setup_ollama_writes_local_auth_source(
 
     exit_code = cli.run_config_command(
         args,
-        stdin=StringIO("ollama\nqwen3-coder\n\n\n"),
+        stdin=StringIO("ollama\nqwen3-coder\n\n\n\n"),
         stdout=stdout,
         stderr=StringIO(),
     )
@@ -574,7 +579,7 @@ def test_line_setup_accepts_unlisted_model_for_unrestricted_provider() -> None:
     from fractal.onboarding import prompt_for_config
 
     config = prompt_for_config(
-        stdin=StringIO("anthropic\nclaude-fable-5\n\n2\n\n"),
+        stdin=StringIO("anthropic\nclaude-fable-5\n\n\n2\n\n"),
         stdout=StringIO(),
     )
 
@@ -590,7 +595,7 @@ def test_line_setup_rejects_unlisted_model_for_restricted_provider(
     install_fake_codex_modules(monkeypatch)
     stdout = StringIO()
     config = prompt_for_config(
-        stdin=StringIO("openai-codex\nnot-a-codex-model\ngpt-5.5\n\n"),
+        stdin=StringIO("openai-codex\nnot-a-codex-model\ngpt-5.5\n\n\n"),
         stdout=stdout,
     )
 

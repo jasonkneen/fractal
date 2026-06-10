@@ -125,8 +125,9 @@ and never discard a finished setup.
 
 Config is resolved in layers: the global file, then per-workspace overrides in
 `<workspace>/.fractal/config.toml` (same schema, every field optional), then
-`FRACTAL_PROVIDER` / `FRACTAL_MODEL` / `FRACTAL_SUB_MODEL` /
-`FRACTAL_MAX_ITERATIONS` / `FRACTAL_VERBOSE` environment variables, with CLI
+`FRACTAL_PROVIDER` / `FRACTAL_MODEL` / `FRACTAL_SUB_PROVIDER` /
+`FRACTAL_SUB_MODEL` / `FRACTAL_MAX_ITERATIONS` / `FRACTAL_VERBOSE`
+environment variables, with CLI
 flags on top. A repo can pin its model without touching anyone's global
 config, and CI can override via env. `fractal config show` lists which layers
 contributed. Environment overrides apply only once some config file exists,
@@ -138,6 +139,9 @@ Beyond the active provider and model, the config supports:
 # optional: a cheaper model for RLM sub-calls; chosen during setup and /model,
 # defaults to the main model
 active_sub_model = "gpt-5.4-mini"
+# optional: run the sub-model on a different provider (its auth is collected
+# during setup too); defaults to the main provider
+active_sub_provider = "groq"
 
 [defaults]            # optional run defaults, overridden by CLI flags
 max_iterations = 30   # --max-iterations
@@ -153,10 +157,11 @@ non-interactively. Switching providers clears `active_sub_model`; run
 defaults are preserved.
 
 Inside the interactive session, `/provider` re-runs provider setup and
-`/model` switches models for the configured provider; both walk the same two
-steps — main model, then sub-model (defaulting to "same as main model") — and
-`/verbose` toggles trace display. Provider setup asks the same two model
-questions before auth.
+`/model` switches models for the configured providers, and `/verbose`
+toggles trace display. Setup walks main provider → main model → sub-model
+provider (defaulting to "same as main provider") → sub-model, then collects
+auth for each distinct provider; `/model` changes only the two models within
+their providers.
 
 For one-off runs or tests, `--lm` bypasses global config resolution:
 

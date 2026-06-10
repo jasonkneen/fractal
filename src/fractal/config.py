@@ -18,6 +18,7 @@ CONFIG_FILE_NAME = "config.toml"
 PROJECT_CONFIG_DIR_NAME = ".fractal"
 ENV_PROVIDER = "FRACTAL_PROVIDER"
 ENV_MODEL = "FRACTAL_MODEL"
+ENV_SUB_PROVIDER = "FRACTAL_SUB_PROVIDER"
 ENV_SUB_MODEL = "FRACTAL_SUB_MODEL"
 ENV_MAX_ITERATIONS = "FRACTAL_MAX_ITERATIONS"
 ENV_VERBOSE = "FRACTAL_VERBOSE"
@@ -96,6 +97,8 @@ class FractalConfig(BaseModel):
     schema_version: Literal[1] = CONFIG_SCHEMA_VERSION
     active_provider: str = Field(min_length=1)
     active_model: str = Field(min_length=1)
+    # Sub-LM provider; None means RLM sub-calls use the active provider.
+    active_sub_provider: str | None = Field(default=None, min_length=1)
     active_sub_model: str | None = Field(default=None, min_length=1)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
@@ -120,6 +123,13 @@ class FractalConfig(BaseModel):
             )
         if self.active_provider not in self.providers:
             raise ValueError("active_provider must reference a configured provider.")
+        if (
+            self.active_sub_provider is not None
+            and self.active_sub_provider not in self.providers
+        ):
+            raise ValueError(
+                "active_sub_provider must reference a configured provider."
+            )
         return self
 
 
@@ -131,6 +141,7 @@ class ProjectFractalConfig(BaseModel):
     schema_version: Literal[1] = CONFIG_SCHEMA_VERSION
     active_provider: str | None = Field(default=None, min_length=1)
     active_model: str | None = Field(default=None, min_length=1)
+    active_sub_provider: str | None = Field(default=None, min_length=1)
     active_sub_model: str | None = Field(default=None, min_length=1)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
@@ -150,6 +161,7 @@ class EffectiveFractalConfig(BaseModel):
     schema_version: Literal[1] = CONFIG_SCHEMA_VERSION
     provider: str
     model: str
+    sub_provider: str | None = None
     sub_model: str | None = None
     provider_config: ProviderConfig
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
@@ -268,7 +280,12 @@ def load_layered_config(
 
     if project_config is not None:
         overlay = project_config.model_dump(mode="python", exclude_none=True)
-        for key in ("active_provider", "active_model", "active_sub_model"):
+        for key in (
+            "active_provider",
+            "active_model",
+            "active_sub_provider",
+            "active_sub_model",
+        ):
             if key in overlay:
                 data[key] = overlay[key]
         for provider_id, provider_data in overlay.get("providers", {}).items():
@@ -285,6 +302,7 @@ def load_layered_config(
     for env_name, key in (
         (ENV_PROVIDER, "active_provider"),
         (ENV_MODEL, "active_model"),
+        (ENV_SUB_PROVIDER, "active_sub_provider"),
         (ENV_SUB_MODEL, "active_sub_model"),
     ):
         value = environment.get(env_name)
@@ -343,6 +361,7 @@ def resolve_effective_config(
     return EffectiveFractalConfig(
         provider=config.active_provider,
         model=config.active_model,
+        sub_provider=config.active_sub_provider,
         sub_model=config.active_sub_model,
         provider_config=config.providers[config.active_provider],
         defaults=config.defaults,
@@ -400,6 +419,8 @@ def render_effective_config(config: EffectiveFractalConfig) -> str:
         f"provider: {config.provider}",
         f"model: {config.model}",
     ])
+    if config.sub_provider is not None:
+        lines.append(f"sub_provider: {config.sub_provider}")
     if config.sub_model is not None:
         lines.append(f"sub_model: {config.sub_model}")
     if provider_config.auth_source is not None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol, TextIO
 
@@ -87,17 +87,24 @@ def resolve_runtime_lms(
         return None
     sub_lm = args.sub_lm
     sub_lm_follows_main = args.sub_lm is None
-    if sub_lm is None and result.config.active_sub_model is not None:
+    sub_model = result.config.active_sub_model
+    if sub_lm is None:
         try:
-            sub_lm = build_lm(replace(selection, model=result.config.active_sub_model))
+            sub_selection = sub_selection_from_config(
+                result.config, path=result.path
+            )
+            if sub_selection is not None:
+                sub_lm = build_lm(sub_selection)
+                sub_model = sub_selection.model
+                sub_lm_follows_main = False
         except ProviderError as exc:
             print(f"fractal config: sub model: {exc}", file=stderr)
             print(
-                "Fix `active_sub_model` in the config or remove it.",
+                "Fix `active_sub_provider`/`active_sub_model` in the config "
+                "or remove them.",
                 file=stderr,
             )
             return None
-        sub_lm_follows_main = False
     if sub_lm is None:
         sub_lm = lm
     return RuntimeLMConfig(
@@ -106,7 +113,7 @@ def resolve_runtime_lms(
         provider_selection=selection,
         sub_lm_follows_main=sub_lm_follows_main,
         defaults=result.config.defaults,
-        sub_model=result.config.active_sub_model,
+        sub_model=sub_model,
     )
 
 
@@ -122,6 +129,34 @@ def selection_from_config(
     return ProviderSelection(
         provider=effective.provider,
         model=effective.model,
+        api_key_env=provider_config.api_key_env,
+        base_url=provider_config.base_url,
+        auth_source=provider_config.auth_source,
+    )
+
+
+def sub_selection_from_config(
+    config: FractalConfig,
+    *,
+    path: str | Path | None = None,
+) -> ProviderSelection | None:
+    """Provider selection for RLM sub-calls, or None to follow the main LM.
+
+    The sub-LM may live on a different provider (``active_sub_provider``);
+    when only ``active_sub_model`` is set it shares the main provider.
+    """
+    if config.active_sub_provider is None and config.active_sub_model is None:
+        return None
+    provider_id = config.active_sub_provider or config.active_provider
+    provider_config = config.providers[provider_id]
+    model = config.active_sub_model
+    if model is None:
+        from .providers import get_provider
+
+        model = get_provider(provider_id).default_model
+    return ProviderSelection(
+        provider=provider_id,
+        model=model,
         api_key_env=provider_config.api_key_env,
         base_url=provider_config.base_url,
         auth_source=provider_config.auth_source,

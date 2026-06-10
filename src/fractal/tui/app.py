@@ -655,7 +655,7 @@ class TerminalFractalApp:
         from fractal.config import FractalConfigError, write_config
         from fractal.onboarding import SetupInputError, async_prompt_for_config
         from fractal.providers import ProviderError
-        from fractal.runtime_lms import selection_from_config
+        from fractal.runtime_lms import selection_from_config, sub_selection_from_config
 
         try:
             existing = _existing_config()
@@ -665,9 +665,10 @@ class TerminalFractalApp:
                 existing=existing,
             )
             selection = selection_from_config(config)
+            sub_selection = sub_selection_from_config(config)
             self.runtime.apply_provider_selection(
                 selection,
-                sub_model=config.active_sub_model,
+                sub_selection=sub_selection,
             )
             path = write_config(config)
         except (FractalConfigError, ProviderError, SetupInputError, ValueError) as exc:
@@ -690,7 +691,7 @@ class TerminalFractalApp:
             async_prompt_for_sub_model,
         )
         from fractal.providers import ProviderError, get_provider
-        from fractal.runtime_lms import selection_from_config
+        from fractal.runtime_lms import selection_from_config, sub_selection_from_config
 
         try:
             result = load_config()
@@ -702,18 +703,27 @@ class TerminalFractalApp:
                 stdin=self.config_stdin,
                 stdout=self.config_stdout,
             )
+            # The sub-model may live on its own provider; /model changes the
+            # models only, /provider changes the providers.
+            sub_provider_id = (
+                result.config.active_sub_provider or result.config.active_provider
+            )
             sub_model = await async_prompt_for_sub_model(
-                provider=provider,
+                provider=get_provider(sub_provider_id),
                 main_model=model,
                 stdin=self.config_stdin,
                 stdout=self.config_stdout,
                 current=result.config.active_sub_model,
+                allow_same=result.config.active_sub_provider is None,
             )
             config = result.config.model_copy(
                 update={"active_model": model, "active_sub_model": sub_model}
             )
             selection = selection_from_config(config, path=result.path)
-            self.runtime.apply_provider_selection(selection, sub_model=sub_model)
+            sub_selection = sub_selection_from_config(config, path=result.path)
+            self.runtime.apply_provider_selection(
+                selection, sub_selection=sub_selection
+            )
             path = write_config(config, path=result.path)
         except (FractalConfigError, ProviderError, SetupInputError, ValueError) as exc:
             print(f"fractal model setup: {exc}", file=self.config_stderr)

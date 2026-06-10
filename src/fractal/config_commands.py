@@ -4,7 +4,7 @@ import sys
 from typing import Any, TextIO
 
 from .onboarding import SetupInputError, prompt_for_config
-from .runtime_lms import selection_from_config
+from .runtime_lms import selection_from_config, sub_selection_from_config
 
 
 def run_config_command(
@@ -124,13 +124,16 @@ def config_status(
     )
     if result.config.active_sub_model is not None:
         _check_model_against_catalog(
-            result.config.active_provider,
+            result.config.active_sub_provider or result.config.active_provider,
             result.config.active_sub_model,
             label="active_sub_model",
             stderr=stderr,
         )
     try:
         check_provider_readiness(selection)
+        sub_selection = sub_selection_from_config(result.config, path=result.path)
+        if sub_selection is not None:
+            check_provider_readiness(sub_selection)
     except ProviderError as exc:
         print("Fractal config status: invalid", file=stdout)
         print(render_config(result.config, path=result.path), file=stdout)
@@ -194,10 +197,16 @@ def config_setup(
             existing=_existing_config_for_setup(),
         )
         selection = selection_from_config(config)
-        try:
-            check_provider_readiness(selection)
-        except MissingProviderCredentialError as exc:
-            credential_warning = str(exc)
+        warnings: list[str] = []
+        for candidate in (selection, sub_selection_from_config(config)):
+            if candidate is None:
+                continue
+            try:
+                check_provider_readiness(candidate)
+            except MissingProviderCredentialError as exc:
+                warnings.append(str(exc))
+        if warnings:
+            credential_warning = "; ".join(warnings)
         path = write_config(config)
     except (FractalConfigError, ProviderError, SetupInputError, ValueError) as exc:
         print(f"fractal config setup: {exc}", file=stderr)
@@ -362,14 +371,23 @@ def config_set(
             _set_config_path(data, key, value)
             updated = ProjectFractalConfig.model_validate(data)
             if key in {"active_model", "active_sub_model"}:
-                provider_id = updated.active_provider
+                if key == "active_model":
+                    provider_id = updated.active_provider
+                else:
+                    provider_id = updated.active_sub_provider or updated.active_provider
                 if provider_id is None:
                     try:
                         global_config = load_config().config
                     except FractalConfigError:
                         global_config = None
                     if global_config is not None:
-                        provider_id = global_config.active_provider
+                        if key == "active_model":
+                            provider_id = global_config.active_provider
+                        else:
+                            provider_id = (
+                                global_config.active_sub_provider
+                                or global_config.active_provider
+                            )
                 if provider_id is not None and not _check_model_against_catalog(
                     provider_id, str(value), label=key, stderr=stderr
                 ):
@@ -387,12 +405,16 @@ def config_set(
             data = result.config.model_dump(mode="python", exclude_none=True)
             _set_config_path(data, key, value)
             updated = FractalConfig.model_validate(data)
-            if key in {"active_model", "active_sub_model"} and not (
-                _check_model_against_catalog(
-                    updated.active_provider, str(value), label=key, stderr=stderr
+            if key in {"active_model", "active_sub_model"}:
+                provider_id = (
+                    updated.active_provider
+                    if key == "active_model"
+                    else updated.active_sub_provider or updated.active_provider
                 )
-            ):
-                return 1
+                if not _check_model_against_catalog(
+                    provider_id, str(value), label=key, stderr=stderr
+                ):
+                    return 1
             path = write_config(updated, path=result.path)
     except FractalConfigError as exc:
         print(f"fractal config: {exc}", file=stderr)

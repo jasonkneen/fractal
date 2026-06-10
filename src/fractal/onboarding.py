@@ -7,6 +7,7 @@ from typing import Any, TextIO
 
 CUSTOM_MODEL_SENTINEL = "__custom_model__"
 SUB_MODEL_FOLLOWS_MAIN = "__follows_main__"
+SUB_PROVIDER_FOLLOWS_MAIN = "__follows_main_provider__"
 KEY_SOURCE_PASTE = "paste"
 KEY_SOURCE_ENV = "env"
 
@@ -108,6 +109,7 @@ def prompt_for_sub_model(
     stdin: TextIO,
     stdout: TextIO,
     current: str | None = None,
+    allow_same: bool = True,
 ) -> str | None:
     if _should_use_inline_menu(stdin=stdin, stdout=stdout):
         return _choose_sub_model(
@@ -115,12 +117,14 @@ def prompt_for_sub_model(
             stdout=stdout,
             main_model=main_model,
             current=current,
+            allow_same=allow_same,
         )
     return _prompt_sub_model_line(
         stdin=stdin,
         stdout=stdout,
         provider=provider,
         current=current,
+        allow_same=allow_same,
     )
 
 
@@ -131,6 +135,7 @@ async def async_prompt_for_sub_model(
     stdin: TextIO,
     stdout: TextIO,
     current: str | None = None,
+    allow_same: bool = True,
 ) -> str | None:
     if _should_use_inline_menu(stdin=stdin, stdout=stdout):
         return await _choose_sub_model_async(
@@ -138,12 +143,14 @@ async def async_prompt_for_sub_model(
             stdout=stdout,
             main_model=main_model,
             current=current,
+            allow_same=allow_same,
         )
     return _prompt_sub_model_line(
         stdin=stdin,
         stdout=stdout,
         provider=provider,
         current=current,
+        allow_same=allow_same,
     )
 
 
@@ -168,11 +175,139 @@ def _default_provider_id(providers: list[Any], existing: Any | None) -> str:
     return providers[0].id
 
 
-def _existing_sub_model(existing: Any | None, provider: Any) -> str | None:
-    # A saved sub-model only stays meaningful while the provider stays the same.
-    if existing is not None and existing.active_provider == provider.id:
+def _existing_sub_model(
+    existing: Any | None,
+    provider: Any,
+    sub_provider: Any | None = None,
+) -> str | None:
+    # A saved sub-model only stays meaningful while the provider it runs on
+    # stays the same.
+    if existing is None:
+        return None
+    chosen = sub_provider.id if sub_provider is not None else provider.id
+    effective = (
+        getattr(existing, "active_sub_provider", None) or existing.active_provider
+    )
+    if effective == chosen:
         return existing.active_sub_model
     return None
+
+
+def _sub_provider_menu_choices(
+    providers: list[Any], main_provider: Any
+) -> list[MenuChoice]:
+    choices = [
+        MenuChoice(
+            value=SUB_PROVIDER_FOLLOWS_MAIN,
+            label="Same as main provider",
+            detail=f"Run RLM sub-calls on {main_provider.display_name} too",
+        )
+    ]
+    choices.extend(
+        MenuChoice(
+            value=provider.id,
+            label=provider.display_name,
+            detail=f"{provider.id} · default model {provider.default_model}",
+        )
+        for provider in providers
+    )
+    return choices
+
+
+def _default_sub_provider_id(
+    providers: list[Any], existing: Any | None, main_provider: Any
+) -> str:
+    existing_sub = getattr(existing, "active_sub_provider", None)
+    if (
+        existing_sub is not None
+        and existing_sub != main_provider.id
+        and any(provider.id == existing_sub for provider in providers)
+    ):
+        return existing_sub
+    return SUB_PROVIDER_FOLLOWS_MAIN
+
+
+def _choose_sub_provider(
+    *, providers: list[Any], main_provider: Any, existing: Any | None
+) -> Any | None:
+    from .providers import get_provider
+
+    selected = _choose_from_menu(
+        title="Sub-model provider",
+        text=(
+            "Choose the provider for RLM sub-calls. "
+            "Use the arrow keys to move and Enter to select."
+        ),
+        choices=_sub_provider_menu_choices(providers, main_provider),
+        default=_default_sub_provider_id(providers, existing, main_provider),
+    )
+    if selected in {SUB_PROVIDER_FOLLOWS_MAIN, main_provider.id}:
+        return None
+    return get_provider(selected)
+
+
+async def _choose_sub_provider_async(
+    *, providers: list[Any], main_provider: Any, existing: Any | None
+) -> Any | None:
+    from .providers import get_provider
+
+    selected = await _choose_from_menu_async(
+        title="Sub-model provider",
+        text=(
+            "Choose the provider for RLM sub-calls. "
+            "Use the arrow keys to move and Enter to select."
+        ),
+        choices=_sub_provider_menu_choices(providers, main_provider),
+        default=_default_sub_provider_id(providers, existing, main_provider),
+    )
+    if selected in {SUB_PROVIDER_FOLLOWS_MAIN, main_provider.id}:
+        return None
+    return get_provider(selected)
+
+
+def _prompt_sub_provider_line(
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    providers: list[Any],
+    main_provider: Any,
+    existing: Any | None,
+) -> Any | None:
+    from .providers import get_provider
+
+    print(
+        "Choose a provider for RLM sub-calls "
+        "(sub-model can run on a different provider):",
+        file=stdout,
+    )
+    print("1. Same as main provider", file=stdout)
+    provider_by_index: dict[str, Any] = {}
+    for index, provider in enumerate(providers, start=2):
+        print(f"{index}. {provider.display_name} ({provider.id})", file=stdout)
+        provider_by_index[str(index)] = provider
+    provider_ids = {provider.id for provider in providers}
+    default_id = _default_sub_provider_id(providers, existing, main_provider)
+    default = "1" if default_id == SUB_PROVIDER_FOLLOWS_MAIN else default_id
+    while True:
+        answer = _prompt(
+            stdin=stdin,
+            stdout=stdout,
+            label="Sub-provider number or id",
+            default=default,
+        )
+        if answer in {"1", "same"}:
+            return None
+        if answer in provider_by_index:
+            provider = provider_by_index[answer]
+        elif answer in provider_ids:
+            provider = get_provider(answer)
+        else:
+            print(
+                f"Unknown provider {answer!r}. Choose one of the listed providers.",
+                file=stdout,
+            )
+            continue
+        return None if provider.id == main_provider.id else provider
 
 
 def _merged_config(
@@ -180,13 +315,14 @@ def _merged_config(
     existing: Any | None,
     provider: Any,
     model: str,
+    sub_provider: Any | None,
     sub_model: str | None,
-    provider_config: Any,
+    provider_configs: dict[str, Any],
 ) -> Any:
     from .config import FractalConfig
 
     providers = dict(existing.providers) if existing is not None else {}
-    providers[provider.id] = provider_config
+    providers.update(provider_configs)
     defaults = existing.defaults if existing is not None else None
     kwargs: dict[str, Any] = {}
     if defaults is not None:
@@ -194,9 +330,53 @@ def _merged_config(
     return FractalConfig(
         active_provider=provider.id,
         active_model=model,
+        active_sub_provider=sub_provider.id if sub_provider is not None else None,
         active_sub_model=sub_model,
         providers=providers,
         **kwargs,
+    )
+
+
+def _provider_config_line(
+    *, stdin: TextIO, stdout: TextIO, provider: Any, existing: Any | None
+) -> Any:
+    saved = existing.providers.get(provider.id) if existing is not None else None
+    if saved is not None and _prompt_yes_no_line(
+        stdin=stdin,
+        stdout=stdout,
+        label=f"Use saved auth settings for {provider.display_name}?",
+    ):
+        return saved
+    return _prompt_provider_settings_line(
+        stdin=stdin,
+        stdout=stdout,
+        provider_id=provider.id,
+    )
+
+
+def _provider_config_interactive(
+    *, stdout: TextIO, provider: Any, existing: Any | None
+) -> Any:
+    saved = existing.providers.get(provider.id) if existing is not None else None
+    if saved is not None and _reuse_saved_auth_interactive(provider=provider):
+        return saved
+    return _prompt_provider_settings_interactive(
+        provider_id=provider.id,
+        stdout=stdout,
+    )
+
+
+async def _provider_config_interactive_async(
+    *, stdout: TextIO, provider: Any, existing: Any | None
+) -> Any:
+    saved = existing.providers.get(provider.id) if existing is not None else None
+    if saved is not None and await _reuse_saved_auth_interactive_async(
+        provider=provider
+    ):
+        return saved
+    return await _prompt_provider_settings_interactive_async(
+        provider_id=provider.id,
+        stdout=stdout,
     )
 
 
@@ -213,26 +393,32 @@ def _prompt_for_config_interactive(*, stdout: TextIO, existing: Any | None = Non
     )
     provider = get_provider(provider_id)
     model = _choose_model(provider=provider, stdout=stdout)
+    sub_provider = _choose_sub_provider(
+        providers=providers, main_provider=provider, existing=existing
+    )
     sub_model = _choose_sub_model(
-        provider=provider,
+        provider=sub_provider or provider,
         stdout=stdout,
         main_model=model,
-        current=_existing_sub_model(existing, provider),
+        current=_existing_sub_model(existing, provider, sub_provider),
+        allow_same=sub_provider is None,
     )
-    saved = existing.providers.get(provider.id) if existing is not None else None
-    if saved is not None and _reuse_saved_auth_interactive(provider=provider):
-        provider_config = saved
-    else:
-        provider_config = _prompt_provider_settings_interactive(
-            provider_id=provider.id,
-            stdout=stdout,
+    provider_configs = {
+        provider.id: _provider_config_interactive(
+            stdout=stdout, provider=provider, existing=existing
+        )
+    }
+    if sub_provider is not None:
+        provider_configs[sub_provider.id] = _provider_config_interactive(
+            stdout=stdout, provider=sub_provider, existing=existing
         )
     return _merged_config(
         existing=existing,
         provider=provider,
         model=model,
+        sub_provider=sub_provider,
         sub_model=sub_model,
-        provider_config=provider_config,
+        provider_configs=provider_configs,
     )
 
 
@@ -253,28 +439,32 @@ async def _prompt_for_config_interactive_async(
     )
     provider = get_provider(provider_id)
     model = await _choose_model_async(provider=provider, stdout=stdout)
+    sub_provider = await _choose_sub_provider_async(
+        providers=providers, main_provider=provider, existing=existing
+    )
     sub_model = await _choose_sub_model_async(
-        provider=provider,
+        provider=sub_provider or provider,
         stdout=stdout,
         main_model=model,
-        current=_existing_sub_model(existing, provider),
+        current=_existing_sub_model(existing, provider, sub_provider),
+        allow_same=sub_provider is None,
     )
-    saved = existing.providers.get(provider.id) if existing is not None else None
-    if saved is not None and await _reuse_saved_auth_interactive_async(
-        provider=provider
-    ):
-        provider_config = saved
-    else:
-        provider_config = await _prompt_provider_settings_interactive_async(
-            provider_id=provider.id,
-            stdout=stdout,
+    provider_configs = {
+        provider.id: await _provider_config_interactive_async(
+            stdout=stdout, provider=provider, existing=existing
+        )
+    }
+    if sub_provider is not None:
+        provider_configs[sub_provider.id] = await _provider_config_interactive_async(
+            stdout=stdout, provider=sub_provider, existing=existing
         )
     return _merged_config(
         existing=existing,
         provider=provider,
         model=model,
+        sub_provider=sub_provider,
         sub_model=sub_model,
-        provider_config=provider_config,
+        provider_configs=provider_configs,
     )
 
 
@@ -308,31 +498,36 @@ def _prompt_for_config_line(
         default_provider_id=_default_provider_id(providers, existing),
     )
     model = _prompt_model_line(stdin=stdin, stdout=stdout, provider=provider)
+    sub_provider = _prompt_sub_provider_line(
+        stdin=stdin,
+        stdout=stdout,
+        providers=providers,
+        main_provider=provider,
+        existing=existing,
+    )
     sub_model = _prompt_sub_model_line(
         stdin=stdin,
         stdout=stdout,
-        provider=provider,
-        current=_existing_sub_model(existing, provider),
+        provider=sub_provider or provider,
+        current=_existing_sub_model(existing, provider, sub_provider),
+        allow_same=sub_provider is None,
     )
-    saved = existing.providers.get(provider.id) if existing is not None else None
-    if saved is not None and _prompt_yes_no_line(
-        stdin=stdin,
-        stdout=stdout,
-        label=f"Use saved auth settings for {provider.display_name}?",
-    ):
-        provider_config = saved
-    else:
-        provider_config = _prompt_provider_settings_line(
-            stdin=stdin,
-            stdout=stdout,
-            provider_id=provider.id,
+    provider_configs = {
+        provider.id: _provider_config_line(
+            stdin=stdin, stdout=stdout, provider=provider, existing=existing
+        )
+    }
+    if sub_provider is not None:
+        provider_configs[sub_provider.id] = _provider_config_line(
+            stdin=stdin, stdout=stdout, provider=sub_provider, existing=existing
         )
     return _merged_config(
         existing=existing,
         provider=provider,
         model=model,
+        sub_provider=sub_provider,
         sub_model=sub_model,
-        provider_config=provider_config,
+        provider_configs=provider_configs,
     )
 
 
@@ -799,15 +994,19 @@ async def _choose_model_async(*, provider: Any, stdout: TextIO) -> str:
     return selected
 
 
-def _sub_model_menu_choices(provider: Any, main_model: str) -> list[MenuChoice]:
+def _sub_model_menu_choices(
+    provider: Any, main_model: str, *, allow_same: bool = True
+) -> list[MenuChoice]:
     choices, installed = _model_choices_with_installed(provider)
-    menu_choices = [
-        MenuChoice(
-            value=SUB_MODEL_FOLLOWS_MAIN,
-            label="Same as main model",
-            detail=f"Use {main_model} for RLM sub-calls too",
+    menu_choices = []
+    if allow_same:
+        menu_choices.append(
+            MenuChoice(
+                value=SUB_MODEL_FOLLOWS_MAIN,
+                label="Same as main model",
+                detail=f"Use {main_model} for RLM sub-calls too",
+            )
         )
-    ]
     menu_choices.extend(
         MenuChoice(
             value=model,
@@ -830,7 +1029,9 @@ def _sub_model_menu_choices(provider: Any, main_model: str) -> list[MenuChoice]:
 def _sub_model_menu_default(menu_choices: Sequence[MenuChoice], current: str | None) -> str:
     if current is not None and any(choice.value == current for choice in menu_choices):
         return current
-    return SUB_MODEL_FOLLOWS_MAIN
+    if any(choice.value == SUB_MODEL_FOLLOWS_MAIN for choice in menu_choices):
+        return SUB_MODEL_FOLLOWS_MAIN
+    return menu_choices[0].value
 
 
 def _choose_sub_model(
@@ -839,8 +1040,9 @@ def _choose_sub_model(
     stdout: TextIO,
     main_model: str,
     current: str | None = None,
+    allow_same: bool = True,
 ) -> str | None:
-    menu_choices = _sub_model_menu_choices(provider, main_model)
+    menu_choices = _sub_model_menu_choices(provider, main_model, allow_same=allow_same)
     selected = _choose_from_menu(
         title=f"{provider.display_name} sub-model",
         text="Choose a cheaper model for RLM sub-calls, or keep the main model.",
@@ -863,8 +1065,9 @@ async def _choose_sub_model_async(
     stdout: TextIO,
     main_model: str,
     current: str | None = None,
+    allow_same: bool = True,
 ) -> str | None:
-    menu_choices = _sub_model_menu_choices(provider, main_model)
+    menu_choices = _sub_model_menu_choices(provider, main_model, allow_same=allow_same)
     selected = await _choose_from_menu_async(
         title=f"{provider.display_name} sub-model",
         text="Choose a cheaper model for RLM sub-calls, or keep the main model.",
@@ -887,6 +1090,7 @@ def _prompt_sub_model_line(
     stdout: TextIO,
     provider: Any,
     current: str | None = None,
+    allow_same: bool = True,
 ) -> str | None:
     choices, installed = _model_choices_with_installed(provider)
     print(
@@ -894,23 +1098,27 @@ def _prompt_sub_model_line(
         "(a cheaper model used for RLM sub-calls):",
         file=stdout,
     )
-    print("1. Same as main model", file=stdout)
+    start = 1
+    if allow_same:
+        print("1. Same as main model", file=stdout)
+        start = 2
     model_by_index: dict[str, str] = {}
-    for index, model in enumerate(choices, start=2):
+    for index, model in enumerate(choices, start=start):
         note = " (installed)" if model in installed else ""
         print(f"{index}. {model}{note}", file=stdout)
         model_by_index[str(index)] = model
     if provider.allows_custom_model:
         print("Or enter any model id supported by this provider.", file=stdout)
 
+    default = current or ("1" if allow_same else choices[0])
     while True:
         answer = _prompt(
             stdin=stdin,
             stdout=stdout,
             label="Sub-model number or id",
-            default=current or "1",
+            default=default,
         )
-        if answer == "1":
+        if allow_same and answer == "1":
             return None
         if answer in model_by_index:
             return model_by_index[answer]

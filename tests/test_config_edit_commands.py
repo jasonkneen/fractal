@@ -286,3 +286,58 @@ def test_config_status_notes_model_outside_provider_catalog(
     assert exit_code == 0
     assert "Fractal config status: ok" in stdout
     assert "not in the known openai-api catalog" in stderr
+
+
+def write_split_provider_config(config_home: Path) -> Path:
+    path = config_home / "fractal" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        """
+schema_version = 1
+active_provider = "anthropic"
+active_model = "claude-fable-5"
+active_sub_provider = "groq"
+active_sub_model = "qwen/qwen3-32b"
+
+[providers.anthropic]
+auth_source = "env"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.groq]
+auth_source = "env"
+api_key_env = "GROQ_API_KEY"
+""".strip(),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_config_set_sub_model_checks_sub_provider_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    write_split_provider_config(tmp_path)
+
+    # claude-haiku-4-5 is an anthropic model; the sub-LM runs on groq, so the
+    # warning must name the groq catalog.
+    exit_code, _, stderr = run_config(
+        ["config", "set", "active_sub_model", "claude-haiku-4-5"]
+    )
+
+    assert exit_code == 0
+    assert "not in the known groq catalog" in stderr
+
+
+def test_config_show_renders_sub_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    write_split_provider_config(tmp_path)
+
+    exit_code, stdout, _ = run_config(["config", "show"])
+
+    assert exit_code == 0
+    assert "sub_provider: groq" in stdout
+    assert "sub_model: qwen/qwen3-32b" in stdout

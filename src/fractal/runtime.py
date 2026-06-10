@@ -147,15 +147,16 @@ class FractalRuntime:
         selection: ProviderSelection,
         *,
         sub_model: str | None = None,
+        sub_selection: ProviderSelection | None = None,
     ) -> None:
         from dataclasses import replace
 
         from .providers import build_lm, check_provider_readiness
 
         check_provider_readiness(selection)
-        sub_selection = None
-        if sub_model is not None:
+        if sub_selection is None and sub_model is not None:
             sub_selection = replace(selection, model=sub_model)
+        if sub_selection is not None:
             check_provider_readiness(sub_selection)
         lm = build_lm(selection)
         setattr(self.agent, "lm", lm)
@@ -170,7 +171,7 @@ class FractalRuntime:
             setattr(self.agent, "sub_lm", sub_lm)
             self.sub_lm = sub_lm
             self.sub_lm_follows_main = False
-            self.sub_model = sub_model
+            self.sub_model = sub_selection.model
         self.provider_selection = selection
 
     @property

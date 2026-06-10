@@ -28,7 +28,7 @@ def test_setup_merges_new_provider_into_existing_config() -> None:
     from fractal.onboarding import prompt_for_config
 
     config = prompt_for_config(
-        stdin=StringIO("openai-api\n1\n\n2\n\n"),
+        stdin=StringIO("openai-api\n1\n\n\n2\n\n"),
         stdout=StringIO(),
         existing=existing_config(),
     )
@@ -48,7 +48,7 @@ def test_setup_reuses_saved_auth_for_configured_provider() -> None:
 
     stdout = StringIO()
     config = prompt_for_config(
-        stdin=StringIO("anthropic\nclaude-opus-4-8\n\n\n"),
+        stdin=StringIO("anthropic\nclaude-opus-4-8\n\n\n\n"),
         stdout=stdout,
         existing=existing_config(),
     )
@@ -70,7 +70,7 @@ def test_setup_can_reconfigure_auth_for_configured_provider(
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     config = prompt_for_config(
-        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\nn\n1\nsk-ant-new\n"),
+        stdin=StringIO("anthropic\nclaude-sonnet-4-6\n\n\nn\n1\nsk-ant-new\n"),
         stdout=StringIO(),
         existing=existing_config(),
     )
@@ -89,10 +89,102 @@ def test_setup_default_provider_is_the_active_one() -> None:
     # Blank answers accept the defaults: active provider, default model,
     # saved auth.
     config = prompt_for_config(
-        stdin=StringIO("\n\n\n\n"),
+        stdin=StringIO("\n\n\n\n\n"),
         stdout=StringIO(),
         existing=existing_config(),
     )
 
     assert config.active_provider == "anthropic"
     assert config.providers["anthropic"].api_key_env == "ANTHROPIC_API_KEY"
+
+
+def test_setup_allows_split_providers_for_main_and_sub_lm() -> None:
+    from fractal.onboarding import prompt_for_config
+
+    config = prompt_for_config(
+        # provider, model, sub-provider, sub-model (sub provider default),
+        # main auth (env + default var), sub auth (env + default var)
+        stdin=StringIO("anthropic\nclaude-fable-5\ngroq\n\n2\n\n2\n\n"),
+        stdout=StringIO(),
+    )
+
+    assert config.active_provider == "anthropic"
+    assert config.active_model == "claude-fable-5"
+    assert config.active_sub_provider == "groq"
+    assert config.active_sub_model == "openai/gpt-oss-120b"
+    assert config.providers["anthropic"].api_key_env == "ANTHROPIC_API_KEY"
+    assert config.providers["groq"].api_key_env == "GROQ_API_KEY"
+
+
+def test_setup_same_sub_provider_choice_normalizes_to_follows_main() -> None:
+    from fractal.onboarding import prompt_for_config
+
+    config = prompt_for_config(
+        # Picking the main provider again as sub-provider must not record a
+        # redundant active_sub_provider.
+        stdin=StringIO("anthropic\nclaude-fable-5\nanthropic\n\n2\n\n"),
+        stdout=StringIO(),
+    )
+
+    assert config.active_provider == "anthropic"
+    assert config.active_sub_provider is None
+    assert config.active_sub_model is None
+
+
+def test_sub_selection_from_config_resolves_split_provider() -> None:
+    from fractal.config import FractalConfig, ProviderConfig
+    from fractal.runtime_lms import sub_selection_from_config
+
+    providers = {
+        "anthropic": ProviderConfig(auth_source="env", api_key_env="ANTHROPIC_API_KEY"),
+        "groq": ProviderConfig(auth_source="env", api_key_env="GROQ_API_KEY"),
+    }
+
+    split = FractalConfig(
+        active_provider="anthropic",
+        active_model="claude-fable-5",
+        active_sub_provider="groq",
+        active_sub_model="qwen/qwen3-32b",
+        providers=providers,
+    )
+    selection = sub_selection_from_config(split)
+    assert selection is not None
+    assert selection.provider == "groq"
+    assert selection.model == "qwen/qwen3-32b"
+    assert selection.api_key_env == "GROQ_API_KEY"
+
+    same_provider = FractalConfig(
+        active_provider="anthropic",
+        active_model="claude-fable-5",
+        active_sub_model="claude-haiku-4-5",
+        providers=providers,
+    )
+    selection = sub_selection_from_config(same_provider)
+    assert selection is not None
+    assert selection.provider == "anthropic"
+    assert selection.model == "claude-haiku-4-5"
+
+    follows_main = FractalConfig(
+        active_provider="anthropic",
+        active_model="claude-fable-5",
+        providers=providers,
+    )
+    assert sub_selection_from_config(follows_main) is None
+
+
+def test_config_rejects_unknown_sub_provider() -> None:
+    import pytest
+
+    from fractal.config import FractalConfig, ProviderConfig
+
+    with pytest.raises(ValueError, match="active_sub_provider"):
+        FractalConfig(
+            active_provider="anthropic",
+            active_model="claude-fable-5",
+            active_sub_provider="groq",
+            providers={
+                "anthropic": ProviderConfig(
+                    auth_source="env", api_key_env="ANTHROPIC_API_KEY"
+                )
+            },
+        )
