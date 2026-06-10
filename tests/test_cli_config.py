@@ -376,6 +376,7 @@ def test_resolve_runtime_lms_auto_setup_on_missing_config(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "secret-value")
     args = SimpleNamespace(lm=None, sub_lm=None)
     stderr = StringIO()
+    setup_start_calls: list[bool] = []
 
     lm_config = cli.resolve_runtime_lms(
         args,
@@ -383,11 +384,13 @@ def test_resolve_runtime_lms_auto_setup_on_missing_config(
         stdout=StringIO(),
         stderr=stderr,
         auto_setup=True,
+        on_setup_start=lambda: setup_start_calls.append(True),
     )
 
     assert lm_config is not None
     assert lm_config.lm == "anthropic/claude-sonnet-4-6"
     assert "starting setup" in stderr.getvalue()
+    assert setup_start_calls == [True]
     assert (tmp_path / "fractal" / "config.toml").exists()
 
 

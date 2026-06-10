@@ -173,12 +173,18 @@ def run_tui(args: argparse.Namespace) -> int:
     from rich.console import Console
 
     console = Console()
+
+    def show_setup_banner() -> None:
+        console.print(FRACTAL_BANNER, style="bold cyan")
+        console.print("")
+
     lm_config = resolve_runtime_lms(
         args,
         stdin=sys.stdin,
         stdout=sys.stdout,
         stderr=sys.stderr,
         auto_setup=_stdin_is_tty(sys.stdin),
+        on_setup_start=show_setup_banner,
     )
     if lm_config is None:
         return 1

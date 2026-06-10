@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import Callable, Protocol, TextIO
 
 from .config import DefaultsConfig, FractalConfig
 from .lm_types import RuntimeLM
@@ -32,6 +32,7 @@ def resolve_runtime_lms(
     stdout: TextIO,
     stderr: TextIO,
     auto_setup: bool,
+    on_setup_start: Callable[[], None] | None = None,
 ) -> RuntimeLMConfig | None:
     from .config import FractalConfigError, load_layered_config
     from .providers import ProviderError, build_lm
@@ -57,6 +58,8 @@ def resolve_runtime_lms(
             print(f"fractal: no global config found at {result.path}", file=stderr)
             print("Run `fractal config setup` or pass `--lm` explicitly.", file=stderr)
             return None
+        if on_setup_start is not None:
+            on_setup_start()
         print("fractal: no global config found; starting setup.", file=stderr)
         from .config_commands import config_setup
 
