@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from pathlib import Path
+import select
 import sys
 from typing import Any, TextIO
 
@@ -11,6 +12,7 @@ from .runtime_lms import resolve_runtime_lms
 
 
 MAX_STDIN_BYTES = 10 * 1024 * 1024
+STDIN_CONTEXT_GRACE_SECONDS = 1.0
 MAX_ITERATIONS_EXIT_CODE = 2
 DEFAULT_MAX_ITERATIONS = 30
 
@@ -257,10 +259,7 @@ def run_non_interactive(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
-    from rich.console import Console
-
     from .runtime import FractalRuntime
-    from .tui.app import render_iteration_event_log, render_trace_summary
 
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
@@ -302,6 +301,41 @@ def run_non_interactive(
     except Exception as exc:
         print(f"fractal: {exc}", file=stderr)
         return 1
+
+    try:
+        return _run_non_interactive_turn(
+            args,
+            runtime=runtime,
+            message=message,
+            display_verbose=display_verbose,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    finally:
+        try:
+            runtime.close()
+        except KeyboardInterrupt:
+            print(
+                "fractal: sandbox shutdown interrupted; a sandbox may still be "
+                "running. Run `sbx ls` and `sbx rm --force <name>` to clean it up.",
+                file=stderr,
+            )
+        except Exception as exc:
+            print(f"fractal: sandbox cleanup failed: {exc}", file=stderr)
+
+
+def _run_non_interactive_turn(
+    args: argparse.Namespace,
+    *,
+    runtime: Any,
+    message: str,
+    display_verbose: bool,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    from rich.console import Console
+
+    from .tui.app import render_iteration_event_log, render_trace_summary
 
     if not args.quiet:
         _print_startup_banner(stderr)
@@ -390,6 +424,8 @@ def read_non_interactive_stdin(prompt: str, stdin: TextIO) -> str | None:
 
     if _stdin_is_tty(stdin):
         return None
+    if not _stdin_has_data(stdin):
+        return None
     stdin_text = _read_limited_stdin(stdin)
     return stdin_text or None
 
@@ -418,6 +454,25 @@ def _read_limited_stdin(stdin: TextIO) -> str:
             )
         chunks.append(chunk)
     return "".join(chunks)
+
+
+def _stdin_has_data(stdin: TextIO) -> bool:
+    """Whether implicit stdin context should be read.
+
+    A non-TTY stdin that stays open without delivering data (CI runners,
+    process supervisors, agent harnesses) must not block the turn, so wait at
+    most STDIN_CONTEXT_GRACE_SECONDS for the first byte. Streams without a
+    selectable fd (e.g. StringIO) cannot block and are always read.
+    """
+    try:
+        fd = stdin.fileno()
+    except (OSError, ValueError, AttributeError):
+        return True
+    try:
+        ready, _, _ = select.select([fd], [], [], STDIN_CONTEXT_GRACE_SECONDS)
+    except (OSError, ValueError):
+        return True
+    return bool(ready)
 
 
 def _stdin_is_tty(stdin: TextIO) -> bool:

@@ -130,6 +130,41 @@ def test_build_non_interactive_message_uses_stdin_as_prompt() -> None:
     assert build_non_interactive_message("-", "do the task") == "do the task"
 
 
+def test_read_non_interactive_stdin_skips_open_pipe_with_no_data() -> None:
+    import os
+    import threading
+
+    from fractal.cli import read_non_interactive_stdin
+
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r")
+    result: list[str | None] = []
+    try:
+        worker = threading.Thread(
+            target=lambda: result.append(read_non_interactive_stdin("fix it", stdin)),
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=5.0)
+        assert not worker.is_alive(), "read_non_interactive_stdin blocked on idle stdin"
+        assert result == [None]
+    finally:
+        os.close(write_fd)
+        stdin.close()
+
+
+def test_read_non_interactive_stdin_reads_pipe_with_data() -> None:
+    import os
+
+    from fractal.cli import read_non_interactive_stdin
+
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(write_fd, "w") as writer:
+        writer.write("piped context\n")
+    with os.fdopen(read_fd, "r") as stdin:
+        assert read_non_interactive_stdin("fix it", stdin) == "piped context\n"
+
+
 def test_run_non_interactive_prints_response_and_status(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -142,6 +177,9 @@ def test_run_non_interactive_prints_response_and_status(
     class FakeRuntime:
         workspace_path = tmp_path
         session_id = "session-123"
+
+        def close(self) -> None:
+            calls["closed"] = True
 
         async def submit(self, message: str, **kwargs: object) -> FractalResult:
             calls["message"] = message
@@ -187,6 +225,43 @@ def test_run_non_interactive_prints_response_and_status(
     assert create_kwargs["verbose"] is False
 
 
+def test_run_non_interactive_closes_runtime_on_success_and_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from fractal.agent.schema import FractalResult
+    from fractal import cli
+    from fractal.runtime import FractalRuntime
+
+    calls: dict[str, object] = {}
+
+    class FakeRuntime:
+        workspace_path = tmp_path
+        session_id = "session-closed"
+        fail = False
+
+        def close(self) -> None:
+            calls["closed"] = calls.get("closed", 0) + 1
+
+        async def submit(self, message: str, **kwargs: object) -> FractalResult:
+            if self.fail:
+                raise RuntimeError("boom")
+            return FractalResult(response="done", changed_files=[])
+
+    monkeypatch.setattr(FractalRuntime, "create", lambda **kwargs: FakeRuntime())
+    args = cli.build_parser().parse_args(
+        ["--workspace", str(tmp_path), "--lm", "test-lm", "-p", "task"]
+    )
+
+    assert cli.run_non_interactive(args, stdin=StringIO(), stdout=StringIO(), stderr=StringIO()) == 0
+    assert calls["closed"] == 1
+
+    FakeRuntime.fail = True
+    stderr = StringIO()
+    assert cli.run_non_interactive(args, stdin=StringIO(), stdout=StringIO(), stderr=stderr) == 1
+    assert calls["closed"] == 2
+    assert "fractal: failed: boom" in stderr.getvalue()
+
+
 def test_run_non_interactive_verbose_prints_iteration_trace_to_stderr(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -209,6 +284,9 @@ def test_run_non_interactive_verbose_prints_iteration_trace_to_stderr(
     class FakeRuntime:
         workspace_path = tmp_path
         session_id = "session-123"
+
+        def close(self) -> None:
+            calls["closed"] = True
 
         async def submit(self, message: str, **kwargs: object) -> FractalResult:
             on_iteration_event = kwargs.get("on_iteration_event")
@@ -280,6 +358,9 @@ def test_run_non_interactive_quiet_suppresses_verbose_iteration_trace(
         workspace_path = tmp_path
         session_id = "session-123"
 
+        def close(self) -> None:
+            calls["closed"] = True
+
         async def submit(self, message: str, **kwargs: object) -> FractalResult:
             calls["on_iteration_event"] = kwargs.get("on_iteration_event")
             return FractalResult(response="done")
@@ -330,6 +411,9 @@ def test_run_non_interactive_reads_dash_prompt_from_stdin(
         workspace_path = tmp_path
         session_id = "session-123"
 
+        def close(self) -> None:
+            calls["closed"] = True
+
         async def submit(self, message: str, **kwargs: object) -> FractalResult:
             calls["message"] = message
             return FractalResult(response="done")
@@ -373,6 +457,9 @@ def test_run_non_interactive_returns_distinct_code_for_max_iterations(
     class FakeRuntime:
         workspace_path = tmp_path
         session_id = "session-123"
+
+        def close(self) -> None:
+            calls["closed"] = True
 
         async def submit(self, message: str, **kwargs: object) -> FractalResult:
             return FractalResult(response="partial", trace=trace)
