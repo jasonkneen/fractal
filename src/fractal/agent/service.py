@@ -7,7 +7,7 @@ from typing import Protocol, cast
 import dspy
 from dspy.utils.callback import BaseCallback
 from predict_rlm import PredictRLM, RunTrace, Workspace, WorkspaceMode
-from predict_rlm.interpreters import PredictRLMInterpreter, SbxInterpreter
+from predict_rlm.backends import ExecutionBackend, SbxBackend
 from predict_rlm.workspace import DirectWorkspaceMount
 
 from .schema import FractalIterationEvent, FractalResult
@@ -18,7 +18,7 @@ from ..lm_types import RuntimeLM
 from ..session import SessionHistoryTurn
 
 
-class FractalInterpreter(PredictRLMInterpreter, Protocol):
+class FractalInterpreter(ExecutionBackend, Protocol):
     def prewarm(self) -> None: ...
 
 
@@ -137,8 +137,8 @@ class FractalAgent(dspy.Module):
 def create_sbx_interpreter(
     workspace_path: str | Path,
     included_paths: list[str | Path] | None = None,
-) -> SbxInterpreter:
-    return SbxInterpreter(
+) -> SbxBackend:
+    return SbxBackend(
         direct_workspace_mounts=build_direct_workspace_mounts(
             workspace_path,
             included_paths,
