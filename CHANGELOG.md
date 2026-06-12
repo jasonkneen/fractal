@@ -7,11 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `--json` flag for `-p` headless runs: prints one machine-readable result
+  object (`session_id`, `status`, `response`, `changed_files`, `usage`,
+  `error`) to stdout instead of plain text.
 - `install.sh` one-line installer (`curl -LsSf … | sh`) that bootstraps uv,
   installs Fractal as an isolated tool, and checks Docker/`sbx` prerequisites.
 - Documentation for release: requirements (Docker + `sbx`), installation,
   quickstart, a full command-line option reference, and a headless / CI guide.
 - `CONTRIBUTING.md` and this changelog.
+
+### Changed
+- An empty headless prompt is now a no-op: Fractal exits `0` without making a
+  model call (previously it spent a call to answer nothing).
 
 ## [0.1.0] - Unreleased
 

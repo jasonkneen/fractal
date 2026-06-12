@@ -317,6 +317,49 @@ def turn_usage_from_trace(trace: RunTrace | None) -> TurnUsage | None:
     )
 
 
+class HeadlessResult(BaseModel):
+    """Machine-readable result of one non-interactive (`-p --json`) turn.
+
+    Deliberately separate from ``SessionState``: this is the public CLI output
+    contract, so it stays stable even when the on-disk session schema changes.
+    It reports a single turn, not the cumulative session, and carries the real
+    changed-file names from the live turn rather than the summary's counts.
+    """
+
+    session_id: str = ""
+    workspace: str = ""
+    status: Literal["succeeded", "failed", "max_iterations", "interrupted"]
+    response: str = ""
+    changed_files: list[str] = Field(default_factory=list)
+    usage: TurnUsage | None = None
+    error: str | None = None
+
+    def to_json(self) -> str:
+        return json.dumps(self.model_dump(mode="json"))
+
+
+def headless_result_from_turn(
+    *,
+    session_id: str,
+    workspace: str,
+    response: str,
+    changed_files: list[str],
+    trace: RunTrace | None,
+) -> HeadlessResult:
+    """Build a headless result envelope from a completed turn's outputs."""
+    status: Literal["succeeded", "max_iterations"] = "succeeded"
+    if trace is not None and trace.status == "max_iterations":
+        status = "max_iterations"
+    return HeadlessResult(
+        session_id=session_id,
+        workspace=workspace,
+        status=status,
+        response=response,
+        changed_files=list(changed_files),
+        usage=turn_usage_from_trace(trace),
+    )
+
+
 def render_session_summary(summary: SessionSummary) -> str:
     if not summary.turns:
         return "No prior Fractal session context."

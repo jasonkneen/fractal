@@ -36,10 +36,7 @@ fractal -p "Trace how a request flows through this service, end to end" --worksp
 
 - **stdout** = the agent's final response text, nothing else.
 - **stderr** = banner, progress, changed files, usage/cost, completion status.
-- From a source checkout, use `uv run --project /path/to/fractal fractal ...` so
-  the invoking cwd doesn't matter. Beware: if uv fails to spawn (wrong dir, no
-  venv) it exits 2, which collides with Fractal's own max-iterations exit code —
-  distinguish by checking stderr for `error: Failed to spawn`.
+- Capture the two streams separately so you can use the response while still reading diagnostics: `out=$(fractal -p "..." 2>err.log)`.
 
 ## Preflight (do once per machine/session)
 
@@ -67,6 +64,7 @@ For scripting, capture streams separately: `out=$(fractal -p "..." 2>err.log)`.
 ## Key flags
 
 - `--workspace DIR` — directory the agent edits. **Always pass it explicitly**; default is the cwd.
+- `--json` — print one machine-readable result object to stdout instead of plain text (`session_id`, `status`, `response`, `changed_files`, `usage`, `error`). Pair with `--quiet` for stdout-only JSON. See [RECIPES.md](RECIPES.md#structured-output).
 - `--quiet` — suppress all stderr. Stdout-only, but you lose progress, the session id, changed-files, and cost. Prefer capturing stderr to a file over `--quiet` when you need to resume or audit.
 - `--verbose` — full per-iteration trace (reasoning, code, output) on stderr. Use when debugging why a turn did something.
 - `-p -` — read the whole prompt from stdin (fails fast if stdin is empty). Piping stdin alongside a normal `-p "..."` instead appends it as context: `git diff | fractal -p "review this diff"`.
@@ -74,25 +72,10 @@ For scripting, capture streams separately: `out=$(fractal -p "..." 2>err.log)`.
 - `--include DIR` — mount extra read/write dirs into the sandbox (repeatable).
 - `--lm` / `--sub-lm` / `--max-iterations` — per-run overrides; env equivalents `FRACTAL_MODEL`, `FRACTAL_SUB_MODEL`, `FRACTAL_MAX_ITERATIONS`.
 
-## Gotchas (battle-tested)
+## Tips for reliable runs
 
-- **Redirect stdin (`< /dev/null`) whenever you aren't piping data in.** Recent
-  builds wait at most 1s before ignoring a silent non-TTY stdin, but older
-  builds block forever reading it to EOF (CI runners, process managers, agent
-  harnesses keep stdin open) — and with `--quiet` that hang is silent. The
-  redirect is the safe habit on every version:
+- `fractal: command failed: ...` lines on stderr are the agent probing (e.g. trying `pytest` variants), not failures — trust the exit code and any `fractal: failed:` line.
+- Validate model ids with `fractal config status` before a run, so a typo is caught up front rather than mid-turn.
+- For structured output, ask for it in the prompt (e.g. "respond with only a JSON array of …"), or run in a clean git tree and diff it afterwards to see exactly what changed.
 
-  ```bash
-  fractal -p "task" --workspace "$ws" < /dev/null
-  ```
-
-  Implicit piped context must start arriving within ~1s of launch; if your
-  producer is slower, buffer it first (`fractal -p "..." <<<"$(slow_cmd)"`).
-
-- **Turns are slow and billed.** A trivial turn ≈ 1–2 min and ~$0.04; real tasks run several minutes and tens of cents. Wrap calls in your own timeout (≥10 min) — there is no built-in one, and with `--quiet` a hang is indistinguishable from a slow run.
-- **Don't send an empty prompt.** `-p ""` still makes a full billed LLM call just to answer "no request provided".
-- `fractal: command failed: ...` lines on stderr are the agent probing (e.g. trying `pytest` variants) — not fatal; only trust the exit code and `fractal: failed:`.
-- A bad `--lm` id fails with exit 1 only after ~3 LiteLLM retries (slow); validate model ids beforehand with `fractal config status`.
-- No JSON output mode exists. Parse changed files from the stderr `fractal: changed files ...` line, or diff the workspace with git yourself (recommended: run in a clean git tree).
-
-See [RECIPES.md](RECIPES.md) for copy-paste patterns: CI gate, multi-turn driver, diff review, structured-ish output.
+See [RECIPES.md](RECIPES.md) for copy-paste patterns: CI gate, multi-turn driver, diff review, structured output.

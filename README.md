@@ -165,6 +165,10 @@ How non-interactive runs behave:
   banner, changed-file lists, and usage go to **stderr**. This lets you pipe
   the response cleanly while still seeing diagnostics.
 - Add `--quiet` to silence everything but the final stdout response.
+- Add `--json` for a single machine-readable result object on stdout
+  (`session_id`, `status`, `response`, `changed_files`, `usage`, `error`)
+  instead of plain text; pair with `--quiet` for stdout-only JSON.
+- An empty prompt is a no-op: Fractal exits `0` without making a model call.
 - Stdin input is capped at 10 MiB.
 - Exit codes: `0` success, `1` error (bad input, setup/runtime failure),
   `2` the turn hit `--max-iterations` before completing, `130` interrupted.

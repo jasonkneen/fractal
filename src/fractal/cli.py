@@ -32,6 +32,11 @@ def _print_startup_banner(output: TextIO) -> None:
     print(file=output)
 
 
+def _emit_headless_json(stdout: TextIO, result: Any) -> None:
+    stdout.write(result.to_json())
+    stdout.write("\n")
+
+
 def _effective_max_iterations(args: argparse.Namespace, lm_config: Any) -> int:
     if args.max_iterations is not None:
         return args.max_iterations
@@ -101,6 +106,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--debug", action="store_true", help="enable PredictRLM debug mode"
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "with -p, print one JSON result object to stdout instead of plain "
+            "text (pair with --quiet for machine-only output)"
+        ),
     )
     parser.add_argument(
         "-p",
@@ -259,8 +272,6 @@ def run_non_interactive(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
-    from .runtime import FractalRuntime
-
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
@@ -272,6 +283,17 @@ def run_non_interactive(
         print(f"fractal: {exc}", file=stderr)
         return 1
 
+    # An empty prompt has nothing to run; skip the turn before importing the
+    # runtime or spending a model call to answer nothing.
+    if not message.strip():
+        if not args.quiet:
+            print("fractal: empty prompt; nothing to do", file=stderr)
+        return 0
+
+    from .session import HeadlessResult
+
+    workspace = args.workspace.resolve()
+
     lm_config = resolve_runtime_lms(
         args,
         stdin=stdin,
@@ -280,10 +302,20 @@ def run_non_interactive(
         auto_setup=_stdin_is_tty(stdin),
     )
     if lm_config is None:
+        if args.json:
+            _emit_headless_json(
+                stdout,
+                HeadlessResult(
+                    workspace=str(workspace),
+                    status="failed",
+                    error="could not resolve provider/model configuration",
+                ),
+            )
         return 1
 
     display_verbose = _effective_verbose(args, lm_config)
-    workspace = args.workspace.resolve()
+    from .runtime import FractalRuntime
+
     try:
         runtime = FractalRuntime.create(
             workspace_path=workspace,
@@ -299,7 +331,15 @@ def run_non_interactive(
             sub_model=lm_config.sub_model,
         )
     except Exception as exc:
-        print(f"fractal: {exc}", file=stderr)
+        if args.json:
+            _emit_headless_json(
+                stdout,
+                HeadlessResult(
+                    workspace=str(workspace), status="failed", error=str(exc)
+                ),
+            )
+        else:
+            print(f"fractal: {exc}", file=stderr)
         return 1
 
     try:
@@ -335,6 +375,7 @@ def _run_non_interactive_turn(
 ) -> int:
     from rich.console import Console
 
+    from .session import HeadlessResult, headless_result_from_turn
     from .tui.app import render_iteration_event_log, render_trace_summary
 
     if not args.quiet:
@@ -370,10 +411,32 @@ def _run_non_interactive_turn(
             )
         )
     except KeyboardInterrupt:
-        print("fractal: interrupted", file=stderr)
+        if args.json:
+            _emit_headless_json(
+                stdout,
+                HeadlessResult(
+                    session_id=runtime.session_id,
+                    workspace=str(runtime.workspace_path),
+                    status="interrupted",
+                    error="interrupted by user",
+                ),
+            )
+        else:
+            print("fractal: interrupted", file=stderr)
         return 130
     except Exception as exc:
-        print(f"fractal: failed: {exc}", file=stderr)
+        if args.json:
+            _emit_headless_json(
+                stdout,
+                HeadlessResult(
+                    session_id=runtime.session_id,
+                    workspace=str(runtime.workspace_path),
+                    status="failed",
+                    error=str(exc),
+                ),
+            )
+        else:
+            print(f"fractal: failed: {exc}", file=stderr)
         return 1
 
     if (
@@ -384,7 +447,18 @@ def _run_non_interactive_turn(
     ):
         trace_console.print(render_trace_summary(result.trace, verbose=True))
 
-    if result.response:
+    if args.json:
+        _emit_headless_json(
+            stdout,
+            headless_result_from_turn(
+                session_id=runtime.session_id,
+                workspace=str(runtime.workspace_path),
+                response=result.response,
+                changed_files=result.changed_files,
+                trace=result.trace,
+            ),
+        )
+    elif result.response:
         stdout.write(result.response)
         if not result.response.endswith("\n"):
             stdout.write("\n")

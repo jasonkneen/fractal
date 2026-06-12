@@ -1,14 +1,13 @@
 # Fractal headless recipes
 
-All examples assume `fractal` is on PATH (else
-`uv run --project /path/to/fractal fractal`) and Docker is running.
+All examples assume `fractal` is on your PATH and Docker is running.
 
 ## Delegate a task and capture everything
 
 ```bash
 ws=/path/to/project
 out=$(fractal -p "Fix the bug in calc.py and make tests pass" \
-        --workspace "$ws" </dev/null 2>fractal-err.log)
+        --workspace "$ws" 2>fractal-err.log)
 code=$?
 session=$(grep -m1 '^fractal: session ' fractal-err.log | awk '{print $3}')
 changed=$(grep -m1 '^fractal: changed files ' fractal-err.log | sed 's/^fractal: changed files //')
@@ -19,9 +18,9 @@ echo "$out"
 ## Multi-turn conversation (resume)
 
 ```bash
-fractal -p "Audit auth.py for security issues" --workspace "$ws" </dev/null 2>err1.log
+fractal -p "Audit auth.py for security issues" --workspace "$ws" 2>err1.log
 sid=$(grep -m1 '^fractal: session ' err1.log | awk '{print $3}')
-fractal -p "Now fix the worst issue you found" --resume "$sid" --workspace "$ws" </dev/null
+fractal -p "Now fix the worst issue you found" --resume "$sid" --workspace "$ws"
 ```
 
 Session state lives in `<workspace>/.fractal/sessions/<sid>.json` and includes
@@ -44,7 +43,7 @@ printf 'Rename every occurrence of %s to %s\n' "$old" "$new" | fractal -p - --wo
 
 ```bash
 fractal -p "Run the test suite; fix any failures you find" \
-  --workspace "$PWD" --max-iterations 20 </dev/null 2>fractal.log
+  --workspace "$PWD" --max-iterations 20 2>fractal.log
 case $? in
   0) git diff --exit-code || open_pr_with_changes ;;
   2) echo "::warning::Fractal ran out of iterations"; cat fractal.log ;;
@@ -55,20 +54,37 @@ esac
 Exit 2 still prints a best-effort response on stdout — decide per-pipeline
 whether to treat it as soft-fail.
 
-## Structured-ish output
+## Structured output
 
-There is no `--json` flag. Two reliable options:
+Use `--json` to get one machine-readable result object on stdout. Pair it with
+`--quiet` so stderr stays silent and stdout is exactly the JSON:
 
-1. Ask for it in the prompt and parse stdout (works well in practice):
+```bash
+fractal -p "List every TODO in this repo" --workspace "$ws" --json --quiet | jq .
+```
 
-   ```bash
-   fractal --quiet --workspace "$ws" -p 'List every TODO in this repo.
-   Respond with ONLY a JSON array of {"file": ..., "line": ..., "text": ...}.' | jq .
-   ```
+The object:
 
-2. Trust the filesystem, not the prose: run in a clean git tree and use
-   `git -C "$ws" diff` / `git status --porcelain` after the run to see exactly
-   what changed.
+```json
+{
+  "session_id": "…",
+  "workspace": "/abs/path",
+  "status": "succeeded",
+  "response": "…the agent's answer…",
+  "changed_files": ["a.py"],
+  "usage": {"input_tokens": 0, "output_tokens": 0, "cost": 0.0,
+            "iterations": 0, "duration_ms": 0, "context_tokens": 0},
+  "error": null
+}
+```
+
+`status` is `succeeded | max_iterations | failed | interrupted`; on failure the
+object still prints with `error` set, alongside the matching non-zero exit code.
+Pull a field with jq, e.g. `… --json --quiet | jq -r .response` or
+`jq -r '.changed_files[]'`.
+
+To verify edits independently of the model's prose, run in a clean git tree and
+diff afterwards (`git -C "$ws" diff` / `git status --porcelain`).
 
 ## Read-only questions
 
