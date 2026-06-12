@@ -289,7 +289,6 @@ def test_session_id_cannot_address_paths(tmp_path: Path) -> None:
 def test_turn_usage_from_trace_records_tokens_and_context() -> None:
     from predict_rlm.trace import (
         IterationStep,
-        IterationUsage,
         LMUsage,
         RunTrace,
         TokenUsage,
@@ -315,7 +314,7 @@ def test_turn_usage_from_trace_records_tokens_and_context() -> None:
                 output="o",
                 untruncated_output="o",
                 duration_ms=10,
-                usage=IterationUsage(main_lm={"prompt_tokens": 3000}),
+                usage=LMUsage(main=TokenUsage(input_tokens=3000)),
             ),
             IterationStep(
                 iteration=2,
@@ -324,7 +323,7 @@ def test_turn_usage_from_trace_records_tokens_and_context() -> None:
                 output="o",
                 untruncated_output="o",
                 duration_ms=10,
-                usage=IterationUsage(main_lm={"prompt_tokens": 4100}),
+                usage=LMUsage(main=TokenUsage(input_tokens=4100)),
             ),
         ],
     )

@@ -1186,7 +1186,6 @@ api_key_env = "OPENAI_API_KEY"
 def _usage_trace() -> object:
     from predict_rlm.trace import (
         IterationStep,
-        IterationUsage,
         LMUsage,
         RunTrace,
         TokenUsage,
@@ -1209,8 +1208,8 @@ def _usage_trace() -> object:
                 output="ok",
                 untruncated_output="ok",
                 duration_ms=10,
-                usage=IterationUsage(
-                    main_lm={"prompt_tokens": 7421, "completion_tokens": 141}
+                usage=LMUsage(
+                    main=TokenUsage(input_tokens=7421, output_tokens=141)
                 ),
             ),
         ],
