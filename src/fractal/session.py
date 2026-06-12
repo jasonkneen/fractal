@@ -303,7 +303,7 @@ def turn_usage_from_trace(trace: RunTrace | None) -> TurnUsage | None:
         return None
     context_tokens = 0
     for step in reversed(trace.steps):
-        prompt_tokens = step.usage.main_lm.get("prompt_tokens")
+        prompt_tokens = step.usage.main.input_tokens
         if isinstance(prompt_tokens, int) and prompt_tokens > 0:
             context_tokens = prompt_tokens
             break
