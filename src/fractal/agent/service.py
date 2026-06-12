@@ -12,6 +12,7 @@ from predict_rlm.workspace import DirectWorkspaceMount
 
 from .schema import FractalIterationEvent, FractalResult
 from .signature import build_edit_workspace_signature
+from .skill_loader import build_turn_skills
 from .skills import filesystem_coding_skill
 from ..events import build_predict_runtime_hooks
 from ..lm_types import RuntimeLM
@@ -51,6 +52,7 @@ class FractalAgent(dspy.Module):
         verbose: bool = True,
         debug: bool = False,
         interpreter: FractalInterpreter | None = None,
+        include_builtin_skills: bool = True,
     ) -> None:
         self.lm = lm
         self.sub_lm = sub_lm
@@ -58,6 +60,9 @@ class FractalAgent(dspy.Module):
         self.verbose = verbose
         self.debug = debug
         self.interpreter = interpreter
+        # predict-rlm's pdf/spreadsheet/docx skills are mounted by default so
+        # document and spreadsheet capabilities are ready from the first turn.
+        self.include_builtin_skills = include_builtin_skills
 
     async def aforward(
         self,
@@ -90,7 +95,12 @@ class FractalAgent(dspy.Module):
         predictor_kwargs: dict[str, object] = {
             "lm": self.lm,
             "sub_lm": self.sub_lm,
-            "skills": [filesystem_coding_skill],
+            "skills": build_turn_skills(
+                Path(workspace.path),
+                base_skills=[filesystem_coding_skill],
+                included_paths=included_paths,
+                include_builtin_skills=self.include_builtin_skills,
+            ),
             "max_iterations": self.max_iterations,
             "verbose": self.verbose,
             "debug": self.debug,

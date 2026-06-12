@@ -28,6 +28,11 @@ from rich.text import Text
 from rich.theme import Theme
 
 from fractal.agent.schema import FractalIterationEvent, FractalResult
+from fractal.agent.skill_loader import (
+    BUILTIN_SKILL_SUMMARIES,
+    DEFAULT_PREDICT_RLM_SKILLS,
+    discover_skill_manifests,
+)
 from fractal.events import FractalRuntimeEvent
 from fractal.session import (
     SessionSummary,
@@ -58,6 +63,7 @@ SLASH_COMMANDS = {
     "/model": "Change the main model and sub-model",
     "/provider": "Change provider, model, and auth setup",
     "/usage": "Show token usage and cost for this session",
+    "/skills": "List skills available to the RLM in this workspace",
     "/verbose": "Toggle verbose RLM iteration output",
     "/exit": "Exit Fractal",
     "/quit": "Exit Fractal",
@@ -504,6 +510,9 @@ class TerminalFractalApp:
         if command == "/usage":
             self._handle_usage()
             return True
+        if command == "/skills":
+            self._handle_skills()
+            return True
         if command == "/provider":
             return await self.handle_provider_command(rest)
         if command == "/model":
@@ -567,6 +576,40 @@ class TerminalFractalApp:
     def _handle_usage(self) -> None:
         totals = summarize_usage(self.runtime.session.summary_model)
         self.console.print(render_usage_report(totals))
+
+    def _handle_skills(self) -> None:
+        included_paths = getattr(self.runtime, "included_paths", None) or []
+        manifests = discover_skill_manifests(
+            self.runtime.workspace_path,
+            extra_dirs=included_paths,
+        )
+        table = Table.grid(padding=(0, 2))
+        table.add_column(no_wrap=True)
+        table.add_column(no_wrap=True)
+        table.add_column(overflow="fold")
+        # Built-in predict-rlm skills are mounted on every turn (always on).
+        for name in DEFAULT_PREDICT_RLM_SKILLS:
+            table.add_row(
+                Text(name, style="cyan"),
+                Text("built-in", style="green"),
+                Text(BUILTIN_SKILL_SUMMARIES.get(name, ""), style="dim"),
+            )
+        # Discovered SKILL.md skills are loaded on demand via load_skill().
+        for manifest in manifests:
+            table.add_row(
+                Text(manifest.name, style="cyan"),
+                Text("on demand", style="yellow"),
+                Text(manifest.description or "(no description)", style="dim"),
+            )
+        self.console.print(table)
+        if not manifests:
+            self.console.print(
+                Text(
+                    "Add workspace skills under .fractal/skills/<name>/SKILL.md "
+                    "to load them on demand.",
+                    style="dim",
+                )
+            )
 
     def _reset_rendered_state(self) -> None:
         self._rendered_turn_ids.clear()

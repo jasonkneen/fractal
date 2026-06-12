@@ -12,6 +12,7 @@ blocks run.
 - Agent wrapper: `src/fractal/agent/service.py`.
 - RLM signature: `src/fractal/agent/signature.py`.
 - PredictRLM skill instructions: `src/fractal/agent/skills.py`.
+- Skill loading (defaults + on-demand discovery): `src/fractal/agent/skill_loader.py`.
 - Session persistence: `src/fractal/session.py`.
 - Smoke tests: `tests/test_smoke.py`.
 - Session tests: `tests/test_session.py`.
@@ -106,4 +107,7 @@ detection, branch/worktree awareness, and optional commit generation.
 - There is no robust approval/sandbox policy yet.
 - Changed files are currently coerced from model output.
 - There is no git checkpoint, diff review, or rollback layer yet.
-- There is no MCP/plugin system beyond the planned standard skill loader.
+- There is no MCP/plugin system yet. Standard agent skills are supported via
+  `skill_loader`: predict-rlm's built-in pdf/spreadsheet/docx skills are mounted
+  by default, and workspace/user `SKILL.md` skills are discovered and loaded on
+  demand. See `docs/skills.md`.

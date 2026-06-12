@@ -735,6 +735,11 @@ def test_service_construction() -> None:
     assert agent.debug is True
 
 
+def _filesystem_only_skills(workspace_path: object, *, base_skills: object, **_: object):
+    """Stub for build_turn_skills that ignores discovery and built-ins."""
+    return list(base_skills)
+
+
 def test_agent_aforward_constructs_rlm_and_workspace(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -762,6 +767,10 @@ def test_agent_aforward_constructs_rlm_and_workspace(
 
     monkeypatch.setattr(service, "PredictRLM", FakePredictRLM)
     monkeypatch.setattr(service, "build_predict_runtime_hooks", lambda: [])
+    # Pin skill discovery to nothing so the asserted kwargs stay deterministic;
+    # built-in predict-rlm skills are disabled on the agent below for the same
+    # reason. Skill assembly itself is covered in test_skill_loader.
+    monkeypatch.setattr(service, "build_turn_skills", _filesystem_only_skills)
 
     history_turn = SessionHistoryTurn(
         turn_id="turn-1",
@@ -771,7 +780,12 @@ def test_agent_aforward_constructs_rlm_and_workspace(
         updated_at="2026-05-19T00:00:00+00:00",
     )
 
-    agent = service.FractalAgent(max_iterations=7, verbose=False, debug=True)
+    agent = service.FractalAgent(
+        max_iterations=7,
+        verbose=False,
+        debug=True,
+        include_builtin_skills=False,
+    )
     included_path = tmp_path / "included"
     included_path.mkdir()
     result = asyncio.run(

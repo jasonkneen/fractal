@@ -440,6 +440,53 @@ def test_terminal_tui_run_submits_and_prints_to_scrollback(tmp_path: Path) -> No
     assert "response to fix" in text
 
 
+def test_terminal_tui_skills_command_lists_builtins_and_discovered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    # Isolate user-level skills so discovery is deterministic.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    skill_dir = tmp_path / ".fractal" / "skills" / "data-cleanup"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: data-cleanup\ndescription: Clean messy CSVs.\n---\nbody\n",
+        encoding="utf-8",
+    )
+
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(runtime, console=console)
+
+    asyncio.run(app.handle_slash_command("/skills"))
+
+    text = output.getvalue()
+    # Built-in predict-rlm skills are always advertised.
+    assert "pdf" in text
+    assert "spreadsheet" in text
+    assert "docx" in text
+    # Workspace SKILL.md skills are discovered and shown as on-demand.
+    assert "data-cleanup" in text
+    assert "on demand" in text
+
+
+def test_terminal_tui_skills_command_hints_when_no_workspace_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(runtime, console=console)
+
+    asyncio.run(app.handle_slash_command("/skills"))
+
+    text = output.getvalue()
+    assert "pdf" in text
+    assert ".fractal/skills" in text
+
+
 def test_terminal_tui_renders_live_iteration_events_once(tmp_path: Path) -> None:
     from fractal.tui import TerminalFractalApp
 
