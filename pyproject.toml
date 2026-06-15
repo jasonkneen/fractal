@@ -1,5 +1,5 @@
 [project]
-name = "fractal"
+name = "fractal-rlm"
 version = "0.1.0"
 description = "Interactive coding-agent CLI built around a Recursive Language Model"
 authors = [{ name = "Trampoline AI" }]
@@ -36,6 +36,8 @@ fractal = "fractal.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.11.5",
 ]
 
 [tool.uv.sources]
@@ -43,6 +45,14 @@ predict-rlm = { path = "../predict-rlm", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+lint.select = ["E", "F", "W", "I", "N"]
+lint.ignore = ["E501"]
+line-length = 96
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["N806"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fractal"]

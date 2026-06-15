@@ -56,8 +56,8 @@ ensure_uv() {
 
 # --- 2. install fractal -----------------------------------------------------
 install_fractal() {
-    _pkg="fractal"
-    [ -n "${FRACTAL_VERSION:-}" ] && _pkg="fractal==$FRACTAL_VERSION"
+    _pkg="fractal-rlm"
+    [ -n "${FRACTAL_VERSION:-}" ] && _pkg="fractal-rlm==$FRACTAL_VERSION"
     info "installing $_pkg ..."
     # --force so re-running the script upgrades an existing install.
     uv tool install --force "$_pkg"

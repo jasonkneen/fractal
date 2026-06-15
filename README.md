@@ -84,7 +84,7 @@ pin a version, set `FRACTAL_VERSION`.
 If you already use uv or pipx, install the tool directly instead:
 
 ```bash
-uv tool install fractal      # or: pipx install fractal
+uv tool install fractal-rlm  # or: pipx install fractal-rlm
 fractal --help
 ```
 
