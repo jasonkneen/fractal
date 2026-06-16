@@ -8,6 +8,7 @@ import dspy
 from dspy.utils.callback import BaseCallback
 from predict_rlm import PredictRLM, RunTrace, Workspace, WorkspaceMode
 from predict_rlm.backends import ExecutionBackend, SbxBackend
+from predict_rlm.skills import docx, pdf, spreadsheet
 from predict_rlm.workspace import DirectWorkspaceMount
 
 from ..events import build_predict_runtime_hooks
@@ -90,7 +91,7 @@ class FractalAgent(dspy.Module):
         predictor_kwargs: dict[str, object] = {
             "lm": self.lm,
             "sub_lm": self.sub_lm,
-            "skills": [filesystem_coding_skill],
+            "skills": [filesystem_coding_skill, spreadsheet, pdf, docx],
             "max_iterations": self.max_iterations,
             "verbose": self.verbose,
             "debug": self.debug,
