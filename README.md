@@ -1,39 +1,121 @@
-Fractal
-=======
+<br/>
+<p align="center">
+  <a href="https://fractal.trampoline.ai">
+    <img src="https://raw.githubusercontent.com/Trampoline-AI/fractal/main/assets/logo-mark.png" alt="Fractal" width="132" height="132"/>
+  </a>
+</p>
 
-Fractal is an agentic CLI powered by
+<h1 align="center">fractal</h1>
+
+<p align="center">
+  <em>the recursive language model CLI agent</em>
+</p>
+
+<p align="center">
+  A terminal agent that <strong>is</strong> an RLM. Powered by
+  <a href="https://github.com/Trampoline-AI/predict-rlm">predict-rlm</a> —
+  Trampoline's self-harnessed Recursive Language Model runtime.<br/>
+  The easiest way to see an RLM in action on your own work.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Trampoline-AI/fractal/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/Trampoline-AI/fractal/tests.yml?label=Tests" alt="Tests"></a>
+  <a href="https://pypi.org/project/fractal-rlm/"><img src="https://img.shields.io/pypi/v/fractal-rlm?color=blue" alt="PyPI"></a>
+  <a href="https://pypi.org/project/fractal-rlm/"><img src="https://img.shields.io/pypi/pyversions/fractal-rlm" alt="Python"></a>
+  <a href="https://github.com/Trampoline-AI/fractal/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Trampoline-AI/fractal?color=brightgreen" alt="License"></a>
+  <a href="https://discord.gg/BAkd288sGN"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/Trampoline-AI/fractal"><img src="https://img.shields.io/github/stars/Trampoline-AI/fractal?cacheSeconds=3600" alt="GitHub stars"></a>
+</p>
+
+<p align="center">
+  <a href="https://fractal.trampoline.ai"><strong>Website</strong></a> ·
+  <a href="#installation"><strong>Install</strong></a> ·
+  <a href="#how-it-works"><strong>How it works</strong></a> ·
+  <a href="https://github.com/Trampoline-AI/predict-rlm"><strong>predict-rlm</strong></a> ·
+  <a href="https://discord.gg/BAkd288sGN"><strong>Discord</strong></a>
+</p>
+
+<br/>
+
+```bash
+curl -LsSf https://fractal.trampoline.ai/install.sh | sh
+```
+
+<br/>
+
+## What is Fractal?
+
+Most agents call a model in a loop that humans hand-engineer — the control flow,
+the context management, the tool routing. **Fractal's loop _is_ the model.**
+
+It's a thin terminal UI over
 [predict-rlm](https://github.com/Trampoline-AI/predict-rlm), Trampoline's
-self-harnessed Recursive Language Model runtime. It is an early, intentionally
-bare-bones proof of concept — a thin UI that turns predict-rlm into a usable
-terminal agent — released to see what people build with it.
-
-What makes it different
------------------------
-
-Most agent harnesses are hand-engineered: humans write the control flow, the
-context management, and the tool routing. **predict-rlm is self-harnessed** —
-the model writes and runs its own code, calls a sub-model when it needs to, and
-manages its own context as it works, so capability scales with the underlying
-model instead of with harness engineering, and
+self-harnessed Recursive Language Model runtime. The model writes and runs its
+own code, calls a sub-model when it needs to, and manages its own context as it
+works — so capability scales with the underlying model instead of with harness
+engineering, and
 [without context rot](https://github.com/Trampoline-AI/predict-rlm). (It's an
 implementation of the
 [Recursive Language Models](https://arxiv.org/abs/2512.24601v1) work from MIT
 CSAIL.)
 
 Fractal adds exactly one thing on top: **session management** — multi-turn
-conversation and history, which predict-rlm doesn't do on its own. That is the
+conversation and history, which predict-rlm doesn't do on its own. That's the
 whole product. Each turn is a single RLM call over your workspace, mounted into
 a Docker sandbox so the model's own code and project commands run against the
 real files.
 
-What it's good for
-------------------
+It's an early, intentionally bare-bones proof of concept — released to see what
+people build with it, and to be **the easiest way to get started with an RLM**
+and actually understand how one works, by experimenting on your own tasks.
+
+## How it works
+
+The agent recurses. predict-rlm spawns sub-LMs to work the shards of a task that
+won't fit one context, then folds their results back up:
+
+```
+fractal› go through this 123 page contract, build a timeline, set reminders for the deadlines
+
+RLM turn 1/30 (ok)
+  reasoning: 123 pages won't fit one context — split it
+  python:
+    │ class DatedItem(BaseModel):
+    │     date: datetime.date
+    │     description: str
+    │
+    │ results = await asyncio.gather(*[
+    │     predict("page: dspy.Image -> items: list[DatedItem]", page=render(page, dpi=80))
+    │     for page in doc
+    │ ])
+        ↳ sub-lm 47/123 · page 47
+          2 items · 2026-04-01 renewal notice · 2026-06-30 term end
+          ↳ returning items to parent
+
+RLM turn 2/30 (ok)
+  reasoning: 31 items collected — sort them, then write the deliverable
+  python:
+    │ items = sorted((i for r in results for i in r.items), key=lambda i: i.date)
+    │ write_file("timeline.md", to_markdown(items))
+    │ for i in upcoming(items):
+    │     add_reminder(i.date, i.description)
+
+  Contract timeline · Acme MSA
+  Across all 123 pages I found 31 dated items. Full timeline written to
+  timeline.md; the 4 upcoming deadlines are on your calendar.
+```
+
+A single line can stand in for a million sub-calls — in direct contrast to
+agents that must mechanically emit each sub-agent call one at a time. And every
+peek, chunk, sub-call, and verification step is fully readable in the trace.
+
+## Where it shines
 
 Because the RLM reasons over context programmatically instead of stuffing
-everything into one prompt, Fractal is strongest on analysis- and
-context-heavy work: reading across a large or deep codebase, synthesizing an
-answer from many files, audits, and open-ended investigation. Two ways to use
-it:
+everything into one prompt, Fractal is strongest on **analysis- and
+context-heavy work**: reading across a large or deep codebase, synthesizing an
+answer from many files, audits, and open-ended investigation — anything where
+the context is the hard part. Two ways to use it:
 
 - **Directly**, as your own terminal agent — ask questions, edit code, run
   tasks.
@@ -44,32 +126,20 @@ it:
   teaches an agent when and how to do this.
 
 Fractal is not trying to replace your daily coding agent — more mature tools
-exist for that. It's a window onto what a self-harnessed RLM can do as an agent.
+exist for that. It's a window onto what a self-harnessed RLM can do.
 
-Requirements
-------------
+## What you get
 
-- **Python 3.11+**.
-- **[uv](https://docs.astral.sh/uv/)** to install and run Fractal.
-- **Docker**, running. Every Fractal turn executes generated code inside a
-  Docker Sandbox, so the Docker daemon must be up.
-- **The `sbx` CLI, logged in.** Fractal uses predict-rlm's `sbx` (Docker
-  Sandboxes) backend for code execution:
+- **◆ Powered by predict-rlm** — recursive and self-harnessed. The runtime is
+  the agent; there's no orchestration to assemble.
+- **◆ Model-agnostic** — OpenAI, Anthropic, Gemini, Groq, Ollama, OpenRouter,
+  or any OpenAI-compatible endpoint.
+- **◆ Sandboxed by default** — every turn runs in an isolated Docker sandbox.
+  Point it at real work without flinching.
+- **◆ Headless & scriptable** — drive it from CI or another agent with
+  `fractal -p "…"`.
 
-  ```bash
-  brew install docker/tap/sbx
-  sbx login
-  ```
-
-  If Docker is not running or `sbx` is not logged in, the first turn fails. You
-  can verify the rest of your setup (provider, model, auth) ahead of time with
-  `fractal config status`.
-- **A model provider.** One of the providers in the table below, with its API
-  key available (or `codex login` for `openai-codex`, or a local Ollama
-  server). Setup walks you through this on first run.
-
-Installation
-------------
+## Installation
 
 The quickest way to install the `fractal` command:
 
@@ -78,8 +148,8 @@ curl -LsSf https://fractal.trampoline.ai/install.sh | sh
 ```
 
 The script installs [uv](https://docs.astral.sh/uv/) if needed, installs
-Fractal as an isolated tool, and checks your Docker/`sbx` prerequisites. To
-pin a version, set `FRACTAL_VERSION`.
+Fractal as an isolated tool, and checks your Docker/`sbx` prerequisites. To pin
+a version, set `FRACTAL_VERSION`.
 
 If you already use uv or pipx, install the tool directly instead:
 
@@ -103,8 +173,29 @@ uv run fractal --help
 When running from a checkout, prefix the commands below with `uv run`
 (e.g. `uv run fractal`); an installed tool just uses `fractal`.
 
-Quickstart
-----------
+## Requirements
+
+- **Python 3.11+**.
+- **[uv](https://docs.astral.sh/uv/)** to install and run Fractal.
+- **Docker**, running. Every Fractal turn executes generated code inside a
+  Docker Sandbox, so the Docker daemon must be up.
+- **The `sbx` CLI, logged in.** Fractal uses predict-rlm's `sbx` (Docker
+  Sandboxes) backend for code execution:
+
+  ```bash
+  brew install docker/tap/sbx
+  sbx login
+  ```
+
+  If Docker is not running or `sbx` is not logged in, the first turn fails. You
+  can verify the rest of your setup (provider, model, auth) ahead of time with
+  `fractal config status`.
+- **A model provider.** One of the providers in the
+  [configuration table](#configuration), with its API key available (or
+  `codex login` for `openai-codex`, or a local Ollama server). Setup walks you
+  through this on first run.
+
+## Quickstart
 
 ```bash
 cd your-project
@@ -117,8 +208,7 @@ to supply the API key. After setup you land in an interactive session in the
 current directory. Type a request, and Fractal edits the workspace and reports
 what it changed. Use `/help` to list slash commands and `/exit` to quit.
 
-Usage
------
+## Usage
 
 ```bash
 fractal                       # interactive session in the current directory
@@ -151,7 +241,8 @@ configuration (see [Configuration](#configuration)).
 ### Headless / CI use
 
 `-p`/`--prompt` runs a single turn without the interactive UI, which is the
-mode to use from scripts, hooks, and CI:
+mode to use from scripts, hooks, and CI — and how another agent hands Fractal
+the heavy lifting:
 
 ```bash
 fractal -p "fix the failing tests"          # one turn, prompt as an argument
@@ -187,8 +278,7 @@ of the latest main-LM call rather than a cumulative count. `/usage` reports
 session totals, which persist in `.fractal/sessions/<session-id>.json` and
 survive `--resume`.
 
-Configuration
--------------
+## Configuration
 
 Fractal uses a global TOML config for non-secret provider and model settings.
 On first interactive run, if no global config exists, Fractal starts setup
@@ -330,8 +420,7 @@ For one-off runs or tests, `--lm` bypasses global config resolution:
 uv run fractal --lm openai/gpt-5.5 -p "summarize this repo"
 ```
 
-Troubleshooting
----------------
+## Troubleshooting
 
 - **A turn fails immediately / "sandbox" errors.** Docker is not running or
   `sbx` is not logged in. Start Docker, run `sbx login`, then retry. After an
@@ -347,8 +436,7 @@ Troubleshooting
   via the "Custom model..." menu entry or `fractal config set active_model
   <id>`; only providers with `restricted_models` refuse unknown ids.
 
-Development
------------
+## Development
 
 ```bash
 uv sync                # install dependencies
@@ -358,3 +446,26 @@ uv run pytest          # 200+ tests
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and
 [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+## Go deeper
+
+The real magic is the runtime underneath.
+
+- [**predict-rlm**](https://github.com/Trampoline-AI/predict-rlm) — the
+  recursive, self-harnessed RLM runtime that powers Fractal.
+- [**The RLM paper**](https://arxiv.org/abs/2512.24601v1) — Recursive Language
+  Models, from MIT CSAIL.
+- [**Discord**](https://discord.gg/BAkd288sGN) — build with us. It's early —
+  we'd genuinely love contributions.
+- [**fractal.trampoline.ai**](https://fractal.trampoline.ai) — the landing
+  page.
+
+Fractal is a fully open-source proof of concept we're putting out to see what
+people build with it. It's early, and moving fast.
+
+<br/>
+
+<p align="center">
+  crafted with ♥ in MTL · NYC · FLP<br/>
+  by <a href="https://www.trampoline.ai/">Trampoline AI</a>
+</p>
