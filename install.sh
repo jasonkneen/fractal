@@ -60,7 +60,12 @@ install_fractal() {
     [ -n "${FRACTAL_VERSION:-}" ] && _pkg="fractal-rlm==$FRACTAL_VERSION"
     info "installing $_pkg ..."
     # --force so re-running the script upgrades an existing install.
-    uv tool install --force "$_pkg"
+    # Propagate the install failure explicitly: `set -e` is suppressed because
+    # this function runs in an `if ! ...` guard, and the trailing `|| true`
+    # below would otherwise make the function return 0 even on a failed install.
+    if ! uv tool install --force "$_pkg"; then
+        return 1
+    fi
     uv tool update-shell >/dev/null 2>&1 || true
 }
 
