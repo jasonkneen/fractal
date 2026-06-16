@@ -30,9 +30,6 @@
 
 <p align="center">
   <a href="https://fractal.trampoline.ai"><strong>Website</strong></a> ·
-  <a href="https://www.trampoline.ai/"><strong>Trampoline AI</strong></a> ·
-  <a href="#installation"><strong>Install</strong></a> ·
-  <a href="#how-it-works"><strong>How it works</strong></a> ·
   <a href="https://github.com/Trampoline-AI/predict-rlm"><strong>predict-rlm</strong></a> ·
   <a href="https://discord.gg/BAkd288sGN"><strong>Discord</strong></a>
 </p>
@@ -201,14 +198,20 @@ exist for that. It's a window onto what a self-harnessed RLM can do.
 
 ## What you get
 
-- **◆ Powered by predict-rlm** — recursive and self-harnessed. The runtime is
+- **Powered by predict-rlm** — recursive and self-harnessed. The runtime is
   the agent; there's no orchestration to assemble.
-- **◆ Model-agnostic** — OpenAI, Anthropic, Gemini, Groq, Ollama, OpenRouter,
+- **Model-agnostic** — OpenAI, Anthropic, Gemini, Groq, Ollama, OpenRouter,
   or any OpenAI-compatible endpoint.
-- **◆ Sandboxed by default** — every turn runs in an isolated Docker sandbox.
+- **Sandboxed by default** — every turn runs in an isolated Docker sandbox.
   Point it at real work without flinching.
-- **◆ Headless & scriptable** — drive it from CI or another agent with
+- **Headless & scriptable** — drive it from CI or another agent with
   `fractal -p "…"`.
+
+## Why RLMs?
+
+- [**Recursive Language Models**](https://arxiv.org/abs/2512.24601v1) — the MIT CSAIL paper introducing RLMs: self-harnessed models that write and run their own inference code.
+- [**LongCoT: a benchmark worthy of an RLM's attention**](https://raw.works/longcot-a-benchmark-worthy-of-a-rlms-attention/) — why standard long-context benchmarks miss what RLMs are actually good at.
+- [**RLMs on the AppWorld benchmark**](https://x.com/GabLesperance/status/2060754345247863075) — early results and observations from using an RLM on real tasks.
 
 ## First run
 
@@ -323,18 +326,6 @@ fractal`); an installed tool just uses `fractal`.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and
 [CHANGELOG.md](CHANGELOG.md) for release notes.
 
-## Go deeper
-
-The real magic is the runtime underneath.
-
-- [**predict-rlm**](https://github.com/Trampoline-AI/predict-rlm) — the
-  recursive, self-harnessed RLM runtime that powers Fractal.
-- [**The RLM paper**](https://arxiv.org/abs/2512.24601v1) — Recursive Language
-  Models, from MIT CSAIL.
-- [**Discord**](https://discord.gg/BAkd288sGN) — build with us. It's early —
-  we'd genuinely love contributions.
-- [**fractal.trampoline.ai**](https://fractal.trampoline.ai) — the landing
-  page.
 
 Fractal is a fully open-source proof of concept we're putting out to see what
 people build with it. It's early, and moving fast.
