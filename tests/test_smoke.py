@@ -798,7 +798,7 @@ def test_agent_aforward_constructs_rlm_and_workspace(
     assert calls["kwargs"] == {
         "lm": None,
         "sub_lm": None,
-        "skills": [service.filesystem_coding_skill],
+        "skills": [service.filesystem_coding_skill, service.spreadsheet, service.pdf, service.docx],
         "max_iterations": 7,
         "verbose": False,
         "debug": True,
