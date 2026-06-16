@@ -207,6 +207,7 @@ class TerminalFractalApp:
         prompt_session: PromptSession[str] | None = None,
         verbose_iterations: bool = False,
         banner: str | None = None,
+        update_notice: str | None = None,
         config_stdin: TextIO | None = None,
         config_stdout: TextIO | None = None,
         config_stderr: TextIO | None = None,
@@ -216,6 +217,7 @@ class TerminalFractalApp:
         self.input_stream = input_stream
         self.verbose_iterations = verbose_iterations
         self.banner = banner
+        self.update_notice = update_notice
         self.config_stdin = config_stdin or input_stream or sys.stdin
         self.config_stdout = config_stdout or getattr(self.console, "file", sys.stdout)
         self.config_stderr = config_stderr or getattr(self.console, "file", sys.stderr)
@@ -484,6 +486,8 @@ class TerminalFractalApp:
                 style="dim",
             )
         )
+        if self.update_notice:
+            self.console.print(Text(self.update_notice, style="yellow"))
 
     async def handle_slash_command(self, message: str) -> bool:
         command, _, rest = message.partition(" ")

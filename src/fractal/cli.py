@@ -210,7 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_tui(args: argparse.Namespace) -> int:
+def run_tui(args: argparse.Namespace, notifier: Any | None = None) -> int:
     from rich.console import Console
 
     console = Console()
@@ -257,6 +257,7 @@ def run_tui(args: argparse.Namespace) -> int:
                 console=console,
                 verbose_iterations=display_verbose,
                 banner=FRACTAL_BANNER,
+                update_notice=notifier.notice() if notifier is not None else None,
             ).run()
         )
     finally:
@@ -282,6 +283,7 @@ def run_non_interactive(
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    notifier: Any | None = None,
 ) -> int:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
@@ -361,6 +363,7 @@ def run_non_interactive(
             display_verbose=display_verbose,
             stdout=stdout,
             stderr=stderr,
+            notifier=notifier,
         )
     finally:
         try:
@@ -383,6 +386,7 @@ def _run_non_interactive_turn(
     display_verbose: bool,
     stdout: TextIO,
     stderr: TextIO,
+    notifier: Any | None = None,
 ) -> int:
     from rich.console import Console
 
@@ -391,6 +395,10 @@ def _run_non_interactive_turn(
 
     if not args.quiet:
         _print_startup_banner(stderr)
+        if notifier is not None:
+            notice = notifier.notice()
+            if notice:
+                print(notice, file=stderr)
         print(f"fractal: workspace {runtime.workspace_path}", file=stderr)
         print(f"fractal: session {runtime.session_id}", file=stderr)
         print("fractal: running RLM...", file=stderr)
@@ -572,9 +580,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "config":
         return run_config_command(args)
+
+    # Kick off the stealth PyPI update check now so it overlaps with config
+    # resolution and sandbox prewarm; the notice is read back once we're ready
+    # to render. Skipped for --json so machine-readable output stays clean.
+    notifier = None
+    if not getattr(args, "json", False):
+        from .version_check import UpdateNotifier
+
+        notifier = UpdateNotifier.start()
+
     if args.prompt is not None:
-        return run_non_interactive(args)
-    return run_tui(args)
+        return run_non_interactive(args, notifier=notifier)
+    return run_tui(args, notifier=notifier)
 
 
 if __name__ == "__main__":

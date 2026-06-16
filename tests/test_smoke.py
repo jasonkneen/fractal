@@ -99,11 +99,11 @@ def test_cli_main_dispatches_non_interactive_prompt(monkeypatch: pytest.MonkeyPa
 
     calls: list[object] = []
 
-    def fake_run_non_interactive(args: object) -> int:
+    def fake_run_non_interactive(args: object, **kwargs: object) -> int:
         calls.append(args)
         return 23
 
-    def fake_run_tui(args: object) -> int:
+    def fake_run_tui(args: object, **kwargs: object) -> int:
         raise AssertionError("TUI should not run")
 
     monkeypatch.setattr(cli, "run_non_interactive", fake_run_non_interactive)
@@ -536,6 +536,7 @@ def test_run_tui_shows_shutdown_status_and_closes_runtime(
             console: FakeConsole,
             verbose_iterations: bool,
             banner: str | None = None,
+            update_notice: str | None = None,
         ) -> None:
             events.append(f"app:{verbose_iterations}:banner={banner is not None}")
 
@@ -624,6 +625,7 @@ def test_run_tui_allows_force_exit_during_shutdown(
             console: FakeConsole,
             verbose_iterations: bool,
             banner: str | None = None,
+            update_notice: str | None = None,
         ) -> None:
             events.append("app")
 
