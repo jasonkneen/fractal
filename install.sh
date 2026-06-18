@@ -7,7 +7,7 @@
 #   1. Ensures `uv` is available (bootstraps it if missing).
 #   2. Installs the Fractal CLI as an isolated uv tool, putting `fractal`
 #      on your PATH.
-#   3. Checks the runtime prerequisites (Docker + the `sbx` CLI) and tells
+#   3. Checks the runtime prerequisites (`sbx` CLI + login) and tells
 #      you what's still needed.
 #
 # Environment overrides:
@@ -72,15 +72,6 @@ install_fractal() {
 # --- 3. prerequisite checks (warn only; don't fail the install) -------------
 check_prereqs() {
     info "checking runtime prerequisites..."
-    if has docker; then
-        if docker info >/dev/null 2>&1; then
-            step "${GREEN}Docker is running${RESET}"
-        else
-            warn "Docker is installed but not running. Start Docker before your first turn."
-        fi
-    else
-        warn "Docker not found. Fractal runs each turn in a Docker Sandbox; install Docker."
-    fi
 
     if has sbx; then
         step "${GREEN}sbx CLI found${RESET} (run 'sbx login' if you haven't)"

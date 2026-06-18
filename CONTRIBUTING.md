@@ -11,8 +11,8 @@ cd fractal
 uv sync
 ```
 
-You also need Docker running and the `sbx` CLI logged in to exercise agent
-turns — see the [README requirements](README.md#requirements).
+You also need the `sbx` CLI installed and logged in to exercise agent turns —
+see the [README requirements](README.md#requirements).
 
 ## Running checks
 

@@ -52,17 +52,15 @@ drop into any project and run `fractal`.
 
 - **Python 3.11+**.
 - **[uv](https://docs.astral.sh/uv/)** to install and run Fractal.
-- **Docker**, running. Every Fractal turn executes generated code inside a
-  Docker Sandbox, so the Docker daemon must be up.
-- **The `sbx` CLI, logged in.** Fractal uses predict-rlm's `sbx` (Docker
-  Sandboxes) backend for code execution:
+- **The `sbx` CLI, logged in.** Fractal uses predict-rlm's `sbx`
+  backend for sandboxed code execution:
 
   ```bash
   brew install docker/tap/sbx
   sbx login
   ```
 
-  If Docker is not running or `sbx` is not logged in, the first turn fails. You
+  If `sbx` is not logged in, the first turn fails. You
   can verify the rest of your setup (provider, model, auth) ahead of time with
   `fractal config status`.
 - **A model provider.** One of the providers in the
@@ -74,7 +72,7 @@ drop into any project and run `fractal`.
 
 [Quick start](#quick-start) covers the one-line installer, which installs
 [uv](https://docs.astral.sh/uv/) if needed, installs Fractal as an isolated
-tool, and checks your Docker/`sbx` prerequisites. To pin a version, set
+tool, and checks your `sbx` prerequisites. To pin a version, set
 `FRACTAL_VERSION`.
 
 If you already use uv or pipx, install the tool directly instead:
