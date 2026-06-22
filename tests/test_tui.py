@@ -288,13 +288,79 @@ def test_terminal_tui_prompt_continuation_has_no_ellipsis() -> None:
     assert "…" not in _prompt_continuation(8, 1, True)
 
 
-def test_terminal_tui_word_wrap_prefers_whitespace() -> None:
-    from fractal.tui.app import _word_wrap_break_index
+def test_terminal_tui_prompt_renderer_matches_prompt_toolkit_height() -> None:
+    from prompt_toolkit.data_structures import Point
+    from prompt_toolkit.formatted_text import HTML
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.layout.controls import UIContent
+    from prompt_toolkit.layout.screen import Screen, WritePosition
+    from prompt_toolkit.output import DummyOutput
 
-    assert _word_wrap_break_index("hello world", 8) == len("hello ")
-    assert _word_wrap_break_index("superlongword", 5) == 5
-    assert _word_wrap_break_index("fits", 10) == 4
-    assert _word_wrap_break_index("alpha beta gamma", 12) == len("alpha beta ")
+    from fractal.tui.app import PROMPT_STYLE, _FooterPromptSession, _prompt_continuation
+
+    width = 24
+    text = "alpha beta gamma delta epsilon"
+
+    def line_prefix(lineno: int, wrap_count: int) -> object:
+        if wrap_count == 0:
+            return HTML("<prompt>fractal</prompt><session>›</session> ")
+        return _prompt_continuation(width, lineno, True)
+
+    with create_pipe_input() as pipe_input:
+        session = _FooterPromptSession(
+            style=PROMPT_STYLE,
+            input=pipe_input,
+            output=DummyOutput(),
+            multiline=True,
+            prompt_continuation=_prompt_continuation,
+        )
+        window = session._create_layout().current_window
+
+    content = UIContent(
+        get_line=lambda line_number: [("", text + " ")],
+        line_count=1,
+        cursor_position=Point(x=len(text), y=0),
+    )
+    estimated_height = content.get_height_for_line(0, width, line_prefix)
+    screen = Screen()
+    _, rowcol_to_yx = window._copy_body(
+        content,
+        screen,
+        WritePosition(0, 0, width, 20),
+        0,
+        width,
+        wrap_lines=True,
+        get_line_prefix=line_prefix,
+    )
+    drawn_height = (
+        max((position[0] for position in rowcol_to_yx.values()), default=0) + 1
+    )
+
+    assert drawn_height == estimated_height
+
+
+def test_terminal_tui_footer_filler_uses_small_weight() -> None:
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.layout.containers import HSplit, Window
+    from prompt_toolkit.output import DummyOutput
+
+    from fractal.tui.app import PROMPT_STYLE, _FooterPromptSession, _prompt_continuation
+
+    with create_pipe_input() as pipe_input:
+        session = _FooterPromptSession(
+            style=PROMPT_STYLE,
+            input=pipe_input,
+            output=DummyOutput(),
+            multiline=True,
+            prompt_continuation=_prompt_continuation,
+        )
+        layout = session._create_layout()
+
+    assert isinstance(layout.container, HSplit)
+    filler = layout.container.children[-1]
+    assert isinstance(filler, Window)
+    assert filler.height.preferred == 0
+    assert filler.height.weight == 1
 
 
 def test_terminal_tui_renders_final_response_as_markdown(tmp_path: Path) -> None:
