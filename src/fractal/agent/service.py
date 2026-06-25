@@ -26,6 +26,7 @@ class FractalInterpreter(ExecutionBackend, Protocol):
 
 
 _MAX_WORKSPACE_INSTRUCTIONS_CHARS = 20_000
+SBX_CREATE_TIMEOUT_SECONDS = 60.0
 
 
 def load_workspace_instructions(workspace_path: Path) -> str:
@@ -162,9 +163,13 @@ def create_sbx_interpreter(
     reuse: bool = True,
 ) -> SbxBackend:
     config = (
-        SbxConfig(name=sandbox_name_for(workspace_path, included_paths), reuse=True)
+        SbxConfig(
+            name=sandbox_name_for(workspace_path, included_paths),
+            reuse=True,
+            create_timeout=SBX_CREATE_TIMEOUT_SECONDS,
+        )
         if reuse
-        else None
+        else SbxConfig(create_timeout=SBX_CREATE_TIMEOUT_SECONDS)
     )
     return SbxBackend(
         config=config,

@@ -509,7 +509,7 @@ def test_run_tui_shows_shutdown_status_and_closes_runtime(
             events.append("status_exit")
 
     class FakeConsole:
-        def print(self, message: str, *, style: str | None = None) -> None:
+        def print(self, message: str, *, style: str | None = None, **kwargs: object) -> None:
             events.append(f"print:{message}:{style}")
 
         def status(self, message: str, *, spinner: str) -> FakeStatus:
@@ -599,8 +599,8 @@ def test_run_tui_reports_sbx_auth_failure_without_traceback(
             events.append("status_exit")
 
     class FakeConsole:
-        def print(self, message: str, *, style: str | None = None) -> None:
-            events.append(f"print:{message}:{style}")
+        def print(self, message: str, *, style: str | None = None, **kwargs: object) -> None:
+            events.append(f"print:{message}:{style}:{kwargs}")
 
         def status(self, message: str, *, spinner: str) -> FakeStatus:
             events.append(f"status:{message}:{spinner}")
@@ -654,9 +654,11 @@ def test_run_tui_reports_sbx_auth_failure_without_traceback(
     assert result == 1
     assert (
         "print:fractal: Your sbx CLI is not logged in to Docker. "
-        "Run `sbx login`, then try Fractal again.:red"
+        "Run `sbx login`, then try Fractal again.:red:"
+        "{'markup': False, 'soft_wrap': True}"
     ) in events
     assert "close" in events
+    assert not any("shutting down sandbox" in event for event in events)
 
 
 def test_run_tui_allows_force_exit_during_shutdown(

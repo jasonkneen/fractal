@@ -8,12 +8,42 @@ SBX_DOCKER_AUTH_MESSAGE = (
     "Run `sbx login`, then try Fractal again."
 )
 
+SBX_SETUP_TIMEOUT_MESSAGE = (
+    "The sbx command timed out while Fractal was starting the sandbox. "
+    "Make sure sbx is logged in with `sbx login`, and if you have not set a "
+    "default network policy, run `sbx policy set-default balanced`. "
+    "You can verify the setup with `sbx diagnose`."
+)
+
 
 def user_facing_error(exc: BaseException) -> str:
     """Return the concise CLI message Fractal should show for a failure."""
+    if _is_sbx_timeout_error(exc):
+        return SBX_SETUP_TIMEOUT_MESSAGE
     if _is_sbx_docker_auth_error(exc):
         return SBX_DOCKER_AUTH_MESSAGE
     return str(exc)
+
+
+def _is_sbx_timeout_error(exc: BaseException) -> bool:
+    saw_sbx_command = False
+    saw_timeout = False
+    fragments: list[str] = []
+
+    for current in _exception_chain(exc):
+        fragments.append(str(current))
+        if _is_called_sbx_command(current):
+            saw_sbx_command = True
+        if isinstance(current, (subprocess.TimeoutExpired, TimeoutError)):
+            saw_timeout = True
+
+    text = "\n".join(fragment for fragment in fragments if fragment).lower()
+    if "sbx" in text:
+        saw_sbx_command = True
+    if "timed out" in text or "timeout" in text:
+        saw_timeout = True
+
+    return saw_sbx_command and saw_timeout
 
 
 def _is_sbx_docker_auth_error(exc: BaseException) -> bool:
