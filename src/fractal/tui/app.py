@@ -35,7 +35,6 @@ from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.rule import Rule
-from rich.status import Status
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
