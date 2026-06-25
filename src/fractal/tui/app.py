@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import signal
 import sys
+import textwrap
+from functools import partial
+from io import StringIO
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import Any, Protocol, TextIO
 
 from predict_rlm import RunTrace
 from predict_rlm.trace import IterationStep
@@ -13,12 +17,20 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout.containers import HSplit, Window
+from prompt_toolkit.layout.containers import (
+    Float,
+    FloatContainer,
+    HSplit,
+    VSplit,
+    Window,
+)
+from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.layout import Layout
+from prompt_toolkit.layout.menus import CompletionsMenu, MultiColumnCompletionsMenu
 from prompt_toolkit.styles import Style
+from prompt_toolkit.widgets import Label
 from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.padding import Padding
@@ -45,7 +57,11 @@ from fractal.session import (
     turn_usage_from_trace,
 )
 
-INPUT_PROMPT = HTML("<prompt>fractal</prompt><session>›</session> ")
+PROMPT_ICON = "❯"
+NERD_FONT_PROMPT_ICON = "\uf105"
+USER_MESSAGE_LABEL = "you"
+CONTEXT_LEVEL_SEGMENTS = 5
+CONTEXT_LEVEL_SEGMENT_TOKENS = 40_000
 
 PROMPT_STYLE = Style.from_dict(
     {
@@ -54,8 +70,22 @@ PROMPT_STYLE = Style.from_dict(
         "bottom-toolbar": "noreverse",
         "bottom-toolbar.label": "#6b7280",
         "bottom-toolbar.value": "ansicyan",
+        "fixed-header": "noreverse",
+        "fixed-header.title": "bold #8b5cf6",
+        "fixed-header.label": "#6b7280",
+        "fixed-header.value": "ansicyan",
+        "fixed-header.help": "#6b7280",
+        "fixed-input": "noreverse",
+        "fixed-input.border": "#4b5563",
+        "fixed-input.title": "#6b7280",
     }
 )
+SLASH_COMPLETION_MENU_ROWS = 0
+FIXED_INPUT_ROWS = 3
+FIXED_INPUT_MIN_ROWS = FIXED_INPUT_ROWS
+FIXED_INPUT_MAX_ROWS = FIXED_INPUT_ROWS
+FIXED_INPUT_PREFERRED_ROWS = FIXED_INPUT_ROWS
+
 SLASH_COMMANDS = {
     "/help": "Show available commands",
     "/sessions": "List resumable sessions in this workspace",
@@ -63,12 +93,14 @@ SLASH_COMMANDS = {
     "/new": "Start a fresh session",
     "/model": "Change the main model and sub-model",
     "/provider": "Change provider, model, and auth setup",
+    "/providers": "Change provider, model, and auth setup",
     "/usage": "Show token usage and cost for this session",
     "/verbose": "Toggle verbose RLM iteration output",
     "/exit": "Exit Fractal",
     "/quit": "Exit Fractal",
 }
 RUNNING_STATUS = "[dim]running RLM... (Ctrl-C to interrupt)[/dim]"
+RUNNING_FRAME_TEXT = "running RLM... Ctrl-C to interrupt"
 INTERRUPTING_STATUS = "[yellow]interrupting RLM...[/yellow] [dim](waiting for shutdown)[/dim]"
 RUNTIME_EVENT_STYLES = {
     "file_read": "cyan",
@@ -137,27 +169,117 @@ def slash_command_key_bindings() -> KeyBindings:
 
 
 def _prompt_continuation(width: int, line_number: int, is_soft_wrap: bool) -> str:
-    return "        "
+    return "  "
 
 
-class _FooterPromptSession(PromptSession[str]):
-    """PromptSession whose bottom toolbar hugs the input box.
+class _FixedFramePromptSession(PromptSession[str]):
+    """PromptSession with a fixed header and fixed bottom input area.
 
-    prompt_toolkit claims every row between the cursor and the bottom of the
-    screen and renders the bottom toolbar on the region's last row, leaving a
-    blank gap whenever the prompt sits above the last screen row. A
-    filler window appended below the toolbar absorbs that extra space instead,
-    so the toolbar stays glued to the input.
+    prompt_toolkit owns the screen while the user is typing. By wrapping the
+    normal prompt layout in a top header plus a flexible middle window, the
+    header remains anchored at the top and the multiline input/toolbar stays at
+    the bottom; terminal scrollback and command output occupy the space between
+    prompts rather than pushing the input area around.
     """
+
+    def __init__(self, *args: object, frame_factory: object, **kwargs: object) -> None:
+        self._frame_factory = frame_factory
+        super().__init__(*args, **kwargs)
 
     def _create_layout(self) -> Layout:
         layout = super()._create_layout()
-        container = layout.container
-        if isinstance(container, HSplit):
-            container.children.append(
-                Window(height=Dimension(preferred=0, weight=1))
+        prompt_container = layout.container
+        if isinstance(prompt_container, HSplit):
+            message_area = Window(height=Dimension(preferred=0, weight=1))
+            completion_floats = _lift_completion_menu_floats(prompt_container)
+            layout.container = self._frame_factory(
+                message_area=message_area,
+                input_body=prompt_container,
+                floats=completion_floats,
+                show_transcript=True,
             )
         return layout
+
+
+def _rounded_input_frame(body: object, title: object) -> HSplit:
+    fill = partial(Window, style="class:fixed-input.border")
+    top = VSplit(
+        [
+            fill(width=1, height=1, char="╭"),
+            fill(char="─"),
+            Label(
+                title,
+                style="class:fixed-input.title",
+                dont_extend_width=True,
+            ),
+            fill(width=1, height=1, char="╮"),
+        ],
+        height=1,
+    )
+    middle = VSplit(
+        [
+            fill(width=1, char="│"),
+            body,
+            fill(width=1, char="│"),
+        ],
+        padding=0,
+    )
+    bottom = VSplit(
+        [
+            fill(width=1, height=1, char="╰"),
+            fill(char="─"),
+            fill(width=1, height=1, char="╯"),
+        ],
+        height=1,
+    )
+    return HSplit(
+        [top, middle, bottom],
+        height=Dimension(
+            min=FIXED_INPUT_MIN_ROWS,
+            preferred=FIXED_INPUT_PREFERRED_ROWS,
+            max=FIXED_INPUT_MAX_ROWS,
+        ),
+        style="class:fixed-input",
+    )
+
+
+def _lift_completion_menu_floats(container: object) -> list[Float]:
+    """Move completion menus out of the fixed input frame.
+
+    prompt_toolkit creates completion menus as cursor-relative floats inside the
+    prompt input container. Fractal fixes that prompt to the bottom of the
+    screen, so leaving the menu there clips it to the input frame. Keeping the
+    floats cursor-relative but attaching them to the full-screen root lets slash
+    command menus open upward into the message area.
+    """
+    lifted: list[Float] = []
+    _collect_completion_menu_floats(container, lifted)
+    return lifted
+
+
+def _collect_completion_menu_floats(container: object, lifted: list[Float]) -> None:
+    floats = getattr(container, "floats", None)
+    if isinstance(floats, list):
+        kept: list[Float] = []
+        for float_ in floats:
+            content = getattr(float_, "content", None)
+            if isinstance(content, (CompletionsMenu, MultiColumnCompletionsMenu)):
+                lifted.append(float_)
+            else:
+                kept.append(float_)
+                _collect_completion_menu_floats(content, lifted)
+        floats[:] = kept
+
+    for attr in ("children",):
+        children = getattr(container, attr, None)
+        if children is not None:
+            for child in children:
+                _collect_completion_menu_floats(child, lifted)
+
+    for attr in ("body", "content", "alternative_content"):
+        child = getattr(container, attr, None)
+        if child is not None:
+            _collect_completion_menu_floats(child, lifted)
 
 
 def _format_token_count(tokens: int) -> str:
@@ -166,6 +288,24 @@ def _format_token_count(tokens: int) -> str:
     if tokens < 1_000_000:
         return f"{tokens / 1000:.1f}k"
     return f"{tokens / 1_000_000:.2f}M"
+
+
+def _nerd_font_enabled() -> bool:
+    value = os.environ.get("FRACTAL_NERD_FONT", os.environ.get("NERD_FONT", ""))
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _prompt_icon() -> str:
+    return NERD_FONT_PROMPT_ICON if _nerd_font_enabled() else PROMPT_ICON
+
+
+def _context_level_bar(tokens: int) -> str:
+    filled = min(
+        CONTEXT_LEVEL_SEGMENTS,
+        max(1, (tokens + CONTEXT_LEVEL_SEGMENT_TOKENS - 1) // CONTEXT_LEVEL_SEGMENT_TOKENS),
+    )
+    empty = CONTEXT_LEVEL_SEGMENTS - filled
+    return f"{'▰' * filled}{'▱' * empty}"
 
 
 class SessionLike(Protocol):
@@ -202,6 +342,23 @@ class FractalRuntimeLike(Protocol):
     async def submit(self, user_message: str, **kwargs: object) -> FractalResult: ...
 
 
+class _PrintedTurnStatus:
+    def __init__(self, console: Console) -> None:
+        self.console = console
+        self.started = False
+
+    def start(self) -> None:
+        if not self.started:
+            self.console.print(Text("running RLM... (Ctrl-C to interrupt)", style="dim"))
+            self.started = True
+
+    def update(self, value: str) -> None:
+        self.console.print(value)
+
+    def stop(self) -> None:
+        return
+
+
 class TerminalFractalApp:
     """Terminal-native Fractal interface using the user's normal scrollback."""
 
@@ -228,25 +385,29 @@ class TerminalFractalApp:
         self.config_stdin = config_stdin or input_stream or sys.stdin
         self.config_stdout = config_stdout or getattr(self.console, "file", sys.stdout)
         self.config_stderr = config_stderr or getattr(self.console, "file", sys.stderr)
-        self.prompt_session = prompt_session or _FooterPromptSession(
+        self.prompt_session = prompt_session or _FixedFramePromptSession(
             style=PROMPT_STYLE,
             completer=SlashCommandCompleter(),
-            # Only auto-complete (and reserve rows for the menu) while typing
-            # a slash command; otherwise the input box stays one row tall with
-            # the footer glued below it.
+            # Only auto-complete while typing a slash command. prompt_toolkit
+            # reserves eight menu rows by default, which can make short
+            # terminals fail with "Window too small" as soon as "/" opens the
+            # command menu inside our fixed header/input frame.
             complete_while_typing=Condition(self._typing_slash_command),
+            reserve_space_for_menu=SLASH_COMPLETION_MENU_ROWS,
             key_bindings=slash_command_key_bindings(),
             multiline=True,
             prompt_continuation=_prompt_continuation,
-            bottom_toolbar=self._render_bottom_toolbar,
+            frame_factory=self._fixed_frame_container,
+            erase_when_done=False,
         )
+        self._fixed_command_lines: list[str] = []
         self._rendered_turn_ids: set[str] = set()
         self._pending_turn_ids: set[str] = set()
-        self._prompt_echo_turn_ids: set[str] = set()
+        self._user_message_rendered_turn_ids: set[str] = set()
         self._sigint_mode = "prompt"
         self._active_submit_task: asyncio.Task[FractalResult] | None = None
         self._turn_interrupt_requested = False
-        self._active_status: Status | None = None
+        self._active_status: Any | None = None
         self._last_turn_live_iteration_count = 0
         self._context_estimate_cache: (
             tuple[ContextEstimateCacheKey, int | None] | None
@@ -256,12 +417,12 @@ class TerminalFractalApp:
         previous_sigint_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self._handle_sigint)
         try:
-            if self.input_stream is None and self.console.is_terminal:
-                self._pad_to_bottom()
-            if self.banner:
-                self.console.print(Text(self.banner, style="bold #8b5cf6"))
-                self.console.print()
-            self.render_header()
+            fixed_frame = self.input_stream is None and self.console.is_terminal
+            if not fixed_frame:
+                if self.banner:
+                    self.console.print(Text(self.banner, style="bold #8b5cf6"))
+                    self.console.print()
+                self.render_header()
             self.render_new_turns()
 
             while True:
@@ -281,6 +442,7 @@ class TerminalFractalApp:
                 self._sigint_mode = "turn"
                 await self._execute_turn(message)
         finally:
+            self._reset_live_scroll_region()
             signal.signal(signal.SIGINT, previous_sigint_handler)
 
     async def _execute_turn(self, message: str) -> None:
@@ -299,24 +461,9 @@ class TerminalFractalApp:
             )
         self.render_new_turns()
 
-    def _pad_to_bottom(self) -> None:
-        # Land the first prompt at the bottom of the screen so history flows
-        # upward and the input box sits directly on the status footer. The
-        # prompt claims every row below the cursor (prompt_toolkit renders its
-        # bottom toolbar at the end of that region), so leaving fewer rows
-        # below the header means a smaller gap. Header (3) + the blank line
-        # printed before the prompt + input + footer = 6 rows, plus the banner
-        # and its trailing blank line when one is set.
-        rows = 6
-        if self.banner:
-            rows += len(self.banner.splitlines()) + 1
-        pad = max(self.console.height - rows, 0)
-        if pad:
-            self.console.print("\n" * (pad - 1))
-
     async def run_turn(self, message: str) -> FractalResult | None:
         def mark_pending() -> None:
-            self.mark_latest_turn_as_prompt_echoed()
+            self.render_latest_user_message()
 
         loop = asyncio.get_running_loop()
 
@@ -330,7 +477,7 @@ class TerminalFractalApp:
             live_iteration_events_seen += 1
             loop.call_soon_threadsafe(self._show_iteration_event_status, event)
 
-        status = self.console.status(RUNNING_STATUS, spinner="dots")
+        status = self._turn_status()
         status.start()
         self._active_status = status
         status_running = True
@@ -393,41 +540,135 @@ class TerminalFractalApp:
             return False
         return buffer.document.text.startswith("/")
 
-    def _render_bottom_toolbar(self) -> list[tuple[str, str]]:
-        try:
-            return self._bottom_toolbar_fragments()
-        except Exception:
-            return [("class:bottom-toolbar.label", " fractal")]
+    def _fixed_frame_container(
+        self,
+        *,
+        message_area: object,
+        input_body: object,
+        floats: list[Float] | None = None,
+        show_transcript: bool = False,
+    ) -> FloatContainer:
+        header = Window(
+            content=FormattedTextControl(self._render_fixed_header),
+            height=Dimension.exact(3),
+            style="class:fixed-header",
+        )
+        if show_transcript:
+            message_area = self._fixed_transcript_window()
+        fixed_frame = HSplit(
+            [
+                header,
+                message_area,
+                _rounded_input_frame(input_body, self._input_frame_title_fragments),
+            ]
+        )
+        return FloatContainer(fixed_frame, floats or [])
 
-    def _bottom_toolbar_fragments(self) -> list[tuple[str, str]]:
-        fragments: list[tuple[str, str]] = []
-        model_label = getattr(self.runtime, "model_label", None)
-        if model_label is None:
-            lm = getattr(self.runtime, "lm", None)
-            model_label = str(lm) if lm is not None else None
-        if model_label:
-            sub_label = getattr(self.runtime, "sub_model_label", None) or model_label
-            fragments.append(("class:bottom-toolbar.label", " model "))
-            fragments.append(("class:bottom-toolbar.value", str(model_label)))
-            fragments.append(("class:bottom-toolbar.label", " · sub "))
-            fragments.append(("class:bottom-toolbar.value", str(sub_label)))
-            fragments.append(("class:bottom-toolbar.label", " · verbose "))
-        else:
-            fragments.append(("class:bottom-toolbar.label", " verbose "))
-        fragments.append(
-            (
-                "class:bottom-toolbar.value",
-                "on" if self.verbose_iterations else "off",
-            )
+    def _fixed_transcript_window(self) -> Window:
+        return Window(
+            content=FormattedTextControl(self._fixed_transcript_fragments),
+            height=Dimension(preferred=0, weight=1),
+            wrap_lines=False,
         )
 
-        tokens = self._next_context_tokens()
-        if tokens:
-            fragments.append(("class:bottom-toolbar.label", " · "))
-            fragments.append(
-                ("class:bottom-toolbar.value", f"~{_format_token_count(tokens)} ctx")
+    def _fixed_transcript_fragments(self) -> list[tuple[str, str]]:
+        return [("", "\n".join(self._fixed_transcript_lines()))]
+
+    def _fixed_transcript_lines(self) -> list[str]:
+        visible_rows = max(self.console.height - FIXED_INPUT_ROWS - 3, 1)
+        width = max(self.console.width - 2, 20)
+        lines: list[str] = []
+        try:
+            turns = self.runtime.session.summary_model.turns
+        except Exception:
+            turns = []
+        for turn in turns:
+            lines.extend(
+                self._wrap_transcript_text(
+                    f"{USER_MESSAGE_LABEL} {turn.user.message}",
+                    width,
+                )
             )
-        return fragments
+            if turn.agent is None:
+                lines.append("  …")
+            else:
+                response = turn.agent.response.strip() or f"[{turn.agent.status}]"
+                lines.extend(self._wrap_transcript_text(response, width))
+            lines.append("")
+        lines.extend(self._fixed_command_lines)
+        return lines[-visible_rows:]
+
+    def _wrap_transcript_text(self, text: str, width: int) -> list[str]:
+        wrapped: list[str] = []
+        for raw_line in str(text).splitlines() or [""]:
+            wrapped.extend(
+                textwrap.wrap(
+                    raw_line,
+                    width=width,
+                    replace_whitespace=False,
+                    drop_whitespace=False,
+                )
+                or [""]
+            )
+        return wrapped
+
+    def _remember_fixed_output(self, *renderables: object) -> None:
+        if not self._uses_live_fixed_frame():
+            return
+        output = StringIO()
+        capture = Console(
+            file=output,
+            force_terminal=False,
+            color_system=None,
+            width=self.console.width,
+            legacy_windows=False,
+        )
+        capture.print(*renderables)
+        lines = output.getvalue().rstrip("\n").splitlines()
+        if lines:
+            self._fixed_command_lines.extend(lines)
+            self._fixed_command_lines = self._fixed_command_lines[-200:]
+
+    def _print_command_output(self, *renderables: object) -> None:
+        self._remember_fixed_output(*renderables)
+        self.console.print(*renderables)
+
+    def _setup_menu_frame_container(self, menu_container: object) -> FloatContainer:
+        message_area = HSplit(
+            [
+                menu_container,
+                Window(height=Dimension(preferred=0, weight=1)),
+            ],
+            height=Dimension(preferred=0, weight=1),
+        )
+        prompt_line = Window(
+            content=FormattedTextControl(self._fixed_prompt_placeholder_fragments),
+            height=Dimension.exact(1),
+            dont_extend_height=True,
+        )
+        return self._fixed_frame_container(
+            message_area=message_area,
+            input_body=prompt_line,
+        )
+
+    def _fixed_prompt_placeholder_fragments(self) -> list[tuple[str, str]]:
+        return self._input_prompt_fragments()
+
+    def _input_prompt_fragments(self) -> list[tuple[str, str]]:
+        return [("class:prompt", self._prompt_icon()), ("", " ")]
+
+    def _prompt_icon(self) -> str:
+        return _prompt_icon()
+
+    def _input_frame_title_fragments(self) -> list[tuple[str, str]]:
+        tokens = self._next_context_tokens()
+        if tokens is None:
+            return [("class:fixed-input.title", " ctx -- ")]
+        return [
+            ("class:fixed-input.title", " ctx "),
+            ("class:bottom-toolbar.value", _context_level_bar(tokens)),
+            ("class:fixed-input.title", f" ~{_format_token_count(tokens)} "),
+        ]
 
     def _next_context_tokens(self) -> int | None:
         try:
@@ -451,6 +692,14 @@ class TerminalFractalApp:
             return
         status.update(INTERRUPTING_STATUS)
 
+    def _turn_status(self) -> Any:
+        if self._uses_live_fixed_frame():
+            return _PrintedTurnStatus(self.console)
+        return self.console.status(RUNNING_STATUS, spinner="dots")
+
+    def _uses_live_fixed_frame(self) -> bool:
+        return self.input_stream is None and self.console.is_terminal
+
     def _show_runtime_event_status(self, event: FractalRuntimeEvent) -> None:
         if self._turn_interrupt_requested:
             return
@@ -465,6 +714,53 @@ class TerminalFractalApp:
                 verbose=self.verbose_iterations,
             )
         )
+
+    def _render_fixed_header(self) -> list[tuple[str, str]]:
+        try:
+            return self._fixed_header_fragments()
+        except Exception:
+            return [("class:fixed-header.title", " Fractal\n"), ("", "\n\n")]
+
+    def _fixed_header_fragments(self) -> list[tuple[str, str]]:
+        fragments: list[tuple[str, str]] = [
+            ("class:fixed-header.title", " Fractal"),
+            ("", " | "),
+            ("class:fixed-header.label", str(self.runtime.workspace_path)),
+            ("", " | "),
+            ("class:fixed-header.label", "session "),
+            ("class:fixed-header.value", self.runtime.session_id),
+            ("", "\n"),
+        ]
+        model_label = getattr(self.runtime, "model_label", None)
+        if model_label is None:
+            lm = getattr(self.runtime, "lm", None)
+            model_label = str(lm) if lm is not None else None
+        verbose_state = "on" if self.verbose_iterations else "off"
+        if model_label:
+            sub_label = getattr(self.runtime, "sub_model_label", None) or model_label
+            fragments.extend(
+                [
+                    ("class:fixed-header.label", " model "),
+                    ("class:fixed-header.value", str(model_label)),
+                    ("class:fixed-header.label", " | sub "),
+                    ("class:fixed-header.value", str(sub_label)),
+                    ("class:fixed-header.label", " | verbose "),
+                    ("class:fixed-header.value", verbose_state),
+                ]
+            )
+        else:
+            fragments.extend(
+                [
+                    ("class:fixed-header.label", " verbose "),
+                    ("class:fixed-header.value", verbose_state),
+                ]
+            )
+        fragments.append(("", "\n"))
+        help_text = " Type /help for commands, /exit to quit. Alt+Enter inserts a newline."
+        if self.update_notice:
+            help_text = f"{help_text}  {self.update_notice}"
+        fragments.append(("class:fixed-header.help", help_text))
+        return fragments
 
     def render_header(self) -> None:
         self.console.print(
@@ -514,13 +810,13 @@ class TerminalFractalApp:
         command, _, rest = message.partition(" ")
         rest = rest.strip()
         if command == "/resume":
-            self._handle_resume(rest)
+            await self._handle_resume(rest)
             return True
         if command == "/help":
             self._handle_help()
             return True
         if command == "/sessions":
-            self._handle_sessions()
+            await self._handle_sessions()
             return True
         if command == "/new":
             self._handle_new_session()
@@ -528,30 +824,41 @@ class TerminalFractalApp:
         if command == "/usage":
             self._handle_usage()
             return True
-        if command == "/provider":
+        if command in {"/provider", "/providers"}:
             return await self.handle_provider_command(rest)
         if command == "/model":
             return await self.handle_model_command(rest)
         if command == "/verbose":
             return self.handle_verbose_command(rest)
         if _looks_like_slash_command(message):
-            self.console.print(
+            self._print_command_output(
                 Text(f"unknown command: {command} (try /help)", style="yellow")
             )
             return True
         return False
 
-    def _handle_resume(self, session_id: str) -> None:
+    async def _handle_resume(self, session_id: str) -> None:
         if not session_id:
-            self.console.print(Text("usage: /resume <session-id>", style="yellow"))
+            if self._uses_live_fixed_frame():
+                await self._select_and_resume_session(
+                    title="Resume session",
+                    text="Choose a session to resume.",
+                )
+            else:
+                self._print_sessions_table()
             return
+        self._resume_session(session_id)
+
+    def _resume_session(self, session_id: str) -> None:
         try:
             self.runtime.resume(session_id)
         except FileNotFoundError as exc:
-            self.console.print(Text(str(exc), style="red"))
+            self._print_command_output(Text(str(exc), style="red"))
             return
         self._reset_rendered_state()
-        self.console.print(Text(f"resumed session {self.runtime.session_id}", style="dim"))
+        self._print_command_output(
+            Text(f"resumed session {self.runtime.session_id}", style="dim")
+        )
         self.render_new_turns()
 
     def _handle_help(self) -> None:
@@ -560,12 +867,23 @@ class TerminalFractalApp:
         table.add_column()
         for command, description in SLASH_COMMANDS.items():
             table.add_row(Text(command, style="cyan"), Text(description, style="dim"))
-        self.console.print(table)
+        self._print_command_output(table)
 
-    def _handle_sessions(self) -> None:
+    async def _handle_sessions(self) -> None:
+        if self._uses_live_fixed_frame():
+            await self._select_and_resume_session(
+                title="Sessions",
+                text="Choose a session to resume, or Esc to keep the current session.",
+            )
+            return
+        self._print_sessions_table()
+
+    def _print_sessions_table(self) -> None:
         sessions = list_sessions(self.runtime.workspace_path)
         if not sessions:
-            self.console.print(Text("No stored sessions in this workspace.", style="dim"))
+            self._print_command_output(
+                Text("No stored sessions in this workspace.", style="dim")
+            )
             return
         table = Table.grid(padding=(0, 2))
         table.add_column(no_wrap=True)
@@ -578,32 +896,77 @@ class TerminalFractalApp:
                 Text(f"{info.turn_count} turns", style="dim"),
                 Text(info.first_message or "(empty)", style="dim"),
             )
-        self.console.print(table)
-        self.console.print(Text("Resume one with /resume <session-id>.", style="dim"))
+        self._print_command_output(table)
+        self._print_command_output(
+            Text("Resume one with /resume <session-id>.", style="dim")
+        )
+
+    async def _select_and_resume_session(self, *, title: str, text: str) -> None:
+        from fractal.onboarding import (
+            InlineMenuChrome,
+            MenuChoice,
+            SetupInputError,
+            _choose_from_menu_async,
+        )
+
+        sessions = list_sessions(self.runtime.workspace_path)
+        if not sessions:
+            self._print_command_output(
+                Text("No stored sessions in this workspace.", style="dim")
+            )
+            return
+        choices = [
+            MenuChoice(
+                value=info.session_id,
+                label=info.session_id,
+                detail=_session_choice_detail(info),
+            )
+            for info in sessions
+        ]
+        default = next(
+            (
+                info.session_id
+                for info in sessions
+                if info.session_id == self.runtime.session_id
+            ),
+            sessions[0].session_id,
+        )
+        try:
+            session_id = await _choose_from_menu_async(
+                title=title,
+                text=text,
+                choices=choices,
+                default=default,
+                menu_chrome=self._inline_menu_chrome(InlineMenuChrome),
+            )
+        except SetupInputError:
+            self._print_command_output(Text("session selection canceled", style="dim"))
+            return
+        self._resume_session(session_id)
 
     def _handle_new_session(self) -> None:
         self.runtime.new_session()
         self._reset_rendered_state()
-        self.console.print(
+        self._print_command_output(
             Text(f"started new session {self.runtime.session_id}", style="dim")
         )
 
     def _handle_usage(self) -> None:
         totals = summarize_usage(self.runtime.session.summary_model)
-        self.console.print(render_usage_report(totals))
+        self._print_command_output(render_usage_report(totals))
 
     def _reset_rendered_state(self) -> None:
         self._rendered_turn_ids.clear()
         self._pending_turn_ids.clear()
-        self._prompt_echo_turn_ids.clear()
+        self._user_message_rendered_turn_ids.clear()
 
     async def handle_provider_command(self, rest: str) -> bool:
         if rest.strip():
-            self.console.print(Text("usage: /provider", style="yellow"))
+            self._print_command_output(Text("usage: /provider", style="yellow"))
             return True
 
         if await self.run_provider_setup():
-            self.console.print(
+            self._print_command_output(
                 Text(
                     "Provider updated for this session and saved as the default.",
                     style="dim",
@@ -616,11 +979,11 @@ class TerminalFractalApp:
 
     async def handle_model_command(self, rest: str) -> bool:
         if rest.strip():
-            self.console.print(Text("usage: /model", style="yellow"))
+            self._print_command_output(Text("usage: /model", style="yellow"))
             return True
 
         if await self.run_model_setup():
-            self.console.print(
+            self._print_command_output(
                 Text(
                     f"Model updated to {self.runtime.model_label} "
                     f"(sub {self.runtime.sub_model_label}) for this session.",
@@ -644,7 +1007,7 @@ class TerminalFractalApp:
         if not overridden:
             return
         path = project_config_path(self.runtime.workspace_path)
-        self.console.print(
+        self._print_command_output(
             Text(
                 f"note: {path} overrides {', '.join(overridden)}; the saved "
                 "default applies now but the project value wins on next launch.",
@@ -661,11 +1024,15 @@ class TerminalFractalApp:
         elif mode == "off":
             self.verbose_iterations = False
         else:
-            self.console.print(Text("usage: /verbose [on|off]", style="yellow"))
+            self._print_command_output(
+                Text("usage: /verbose [on|off]", style="yellow")
+            )
             return True
         state = "on" if self.verbose_iterations else "off"
-        self.console.print(Text(f"verbose iteration output {state}", style="dim"))
-        self.console.print(
+        self._print_command_output(
+            Text(f"verbose iteration output {state}", style="dim")
+        )
+        self._print_command_output(
             Text(
                 "applies to this session only; persist with "
                 "`fractal config set defaults.verbose "
@@ -677,7 +1044,11 @@ class TerminalFractalApp:
 
     async def run_provider_setup(self) -> bool:
         from fractal.config import FractalConfigError, write_config
-        from fractal.onboarding import SetupInputError, async_prompt_for_config
+        from fractal.onboarding import (
+            InlineMenuChrome,
+            SetupInputError,
+            async_prompt_for_config,
+        )
         from fractal.providers import ProviderError
         from fractal.runtime_lms import selection_from_config, sub_selection_from_config
 
@@ -687,6 +1058,7 @@ class TerminalFractalApp:
                 stdin=self.config_stdin,
                 stdout=self.config_stdout,
                 existing=existing,
+                menu_chrome=self._inline_menu_chrome(InlineMenuChrome),
             )
             selection = selection_from_config(config)
             sub_selection = sub_selection_from_config(config)
@@ -710,6 +1082,7 @@ class TerminalFractalApp:
     async def run_model_setup(self) -> bool:
         from fractal.config import FractalConfigError, load_config, write_config
         from fractal.onboarding import (
+            InlineMenuChrome,
             SetupInputError,
             async_prompt_for_model,
             async_prompt_for_sub_model,
@@ -726,6 +1099,7 @@ class TerminalFractalApp:
                 provider=provider,
                 stdin=self.config_stdin,
                 stdout=self.config_stdout,
+                menu_chrome=self._inline_menu_chrome(InlineMenuChrome),
             )
             # The sub-model may live on its own provider; /model changes the
             # models only, /provider changes the providers.
@@ -739,6 +1113,7 @@ class TerminalFractalApp:
                 stdout=self.config_stdout,
                 current=result.config.active_sub_model,
                 allow_same=result.config.active_sub_provider is None,
+                menu_chrome=self._inline_menu_chrome(InlineMenuChrome),
             )
             config = result.config.model_copy(
                 update={"active_model": model, "active_sub_model": sub_model}
@@ -760,13 +1135,19 @@ class TerminalFractalApp:
         print(f"Fractal config written to {path}", file=self.config_stdout)
         return True
 
+    def _inline_menu_chrome(self, chrome_type: object) -> object | None:
+        if self.input_stream is not None or not self.console.is_terminal:
+            return None
+        self._reset_live_scroll_region()
+        return chrome_type(frame=self._setup_menu_frame_container, style=PROMPT_STYLE)
+
     def render_new_turns(self) -> None:
         for turn in self.runtime.session.summary_model.turns:
             if turn.turn_id in self._rendered_turn_ids:
                 continue
             if turn.agent is None:
                 if turn.turn_id not in self._pending_turn_ids:
-                    if turn.turn_id not in self._prompt_echo_turn_ids:
+                    if turn.turn_id not in self._user_message_rendered_turn_ids:
                         self.render_turn(turn, pending=True)
                     self._pending_turn_ids.add(turn.turn_id)
                 continue
@@ -774,7 +1155,7 @@ class TerminalFractalApp:
                 self.console.print(Rule(style="dim"))
                 self.console.print(render_agent_response(turn))
                 self._pending_turn_ids.remove(turn.turn_id)
-            elif turn.turn_id in self._prompt_echo_turn_ids:
+            elif turn.turn_id in self._user_message_rendered_turn_ids:
                 self.console.print(Rule(style="dim"))
                 self.console.print(render_agent_response(turn))
             else:
@@ -786,27 +1167,33 @@ class TerminalFractalApp:
         self.console.print(Rule(style="dim"))
         self.console.print(render_agent_response(turn, pending=pending))
 
-    def mark_latest_turn_as_prompt_echoed(self) -> None:
+    def render_latest_user_message(self) -> None:
         if self.runtime.session.summary_model.turns:
-            self._prompt_echo_turn_ids.add(
-                self.runtime.session.summary_model.turns[-1].turn_id
-            )
+            turn = self.runtime.session.summary_model.turns[-1]
+            if turn.turn_id not in self._user_message_rendered_turn_ids:
+                self.console.print(render_user_message(turn.user.message))
+                self._user_message_rendered_turn_ids.add(turn.turn_id)
 
     async def read_message(self) -> str | None:
         self.console.print()
         if self.input_stream is None:
+            self._reset_live_scroll_region()
             try:
                 message = await self.prompt_session.prompt_async(
-                    INPUT_PROMPT,
+                    self._input_prompt_fragments(),
                     handle_sigint=False,
                     wrap_lines=True,
                 )
             except (EOFError, KeyboardInterrupt):
+                self._reset_live_scroll_region()
                 self.console.print()
                 return None
             message = message.strip()
             if _will_submit_turn(message):
+                self._pin_live_input_frame(body=RUNNING_FRAME_TEXT)
                 self._sigint_mode = "turn"
+            else:
+                self._reset_live_scroll_region()
             return message
 
         try:
@@ -826,6 +1213,53 @@ class TerminalFractalApp:
         if line == "":
             raise EOFError
         return line
+
+    def _pin_live_input_frame(self, *, body: str | None = None) -> None:
+        if self.input_stream is not None or not self.console.is_terminal:
+            return
+        height = max(self.console.height, FIXED_INPUT_ROWS + 1)
+        width = max(self.console.width, 12)
+        rows = self._static_input_frame_rows(width, body=body)
+        stream = getattr(self.console, "file", sys.stdout)
+        stream.write("\x1b[?25l\x1b[r")
+        top_row = height - len(rows) + 1
+        for index, row in enumerate(rows):
+            stream.write(f"\x1b[{top_row + index};1H\x1b[2K{row}")
+        scroll_bottom = max(top_row - 1, 1)
+        stream.write(f"\x1b[1;{scroll_bottom}r")
+        stream.write(f"\x1b[{scroll_bottom};1H")
+        stream.flush()
+
+    def _reset_live_scroll_region(self) -> None:
+        if self.input_stream is not None or not self.console.is_terminal:
+            return
+        stream = getattr(self.console, "file", sys.stdout)
+        stream.write("\x1b[?25h\x1b[r")
+        stream.flush()
+
+    def _static_input_frame_rows(
+        self,
+        width: int,
+        *,
+        body: str | None = None,
+    ) -> list[str]:
+        title = self._input_frame_title_text()
+        inner_width = max(width - 2, 1)
+        display_title = title[-inner_width:]
+        top_fill = "─" * max(inner_width - len(display_title), 0)
+        prompt = f"{self._prompt_icon()} " if body is None else body
+        middle_body = prompt[:inner_width].ljust(inner_width)
+        return [
+            f"╭{top_fill}{display_title}╮",
+            f"│{middle_body}│",
+            f"╰{'─' * inner_width}╯",
+        ]
+
+    def _input_frame_title_text(self) -> str:
+        tokens = self._next_context_tokens()
+        if tokens is None:
+            return " ctx -- "
+        return f" ctx {_context_level_bar(tokens)} ~{_format_token_count(tokens)} "
 
 
 def render_summary(summary: SessionSummary) -> Group:
@@ -954,12 +1388,25 @@ def render_runtime_event_log(event: FractalRuntimeEvent) -> Text:
 def render_user_message(message: str) -> Group:
     return Group(
         "",
-        Text.assemble(render_prompt_label(), (message, "bold")),
+        Text.assemble(render_user_message_label(), (message, "bold")),
     )
 
 
+def render_user_message_label() -> Text:
+    return Text.assemble((USER_MESSAGE_LABEL, "bold #8b5cf6"), (" ", "bright_black"))
+
+
 def render_prompt_label() -> Text:
-    return Text.assemble(("fractal", "bold #8b5cf6"), ("›", "bright_black"), " ")
+    return Text.assemble((_prompt_icon(), "bold #8b5cf6"), " ")
+
+
+def _session_choice_detail(info: object) -> str:
+    turn_count = getattr(info, "turn_count", 0)
+    unit = "turn" if turn_count == 1 else "turns"
+    first_message = " ".join(str(getattr(info, "first_message", "") or "(empty)").split())
+    if len(first_message) > 72:
+        first_message = f"{first_message[:69]}..."
+    return f"{turn_count} {unit} · {first_message}"
 
 
 def _existing_config() -> object | None:

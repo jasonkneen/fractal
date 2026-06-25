@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TextIO
 
@@ -20,6 +20,12 @@ class MenuChoice:
     value: str
     label: str
     detail: str | None = None
+
+
+@dataclass(frozen=True)
+class InlineMenuChrome:
+    frame: Callable[[Any], Any]
+    style: Any | None = None
 
 
 @dataclass
@@ -76,10 +82,11 @@ async def async_prompt_for_config(
     stdin: TextIO,
     stdout: TextIO,
     existing: Any | None = None,
+    menu_chrome: InlineMenuChrome | None = None,
 ) -> Any:
     if _should_use_inline_menu(stdin=stdin, stdout=stdout):
         return await _prompt_for_config_interactive_async(
-            stdout=stdout, existing=existing
+            stdout=stdout, existing=existing, menu_chrome=menu_chrome
         )
     return _prompt_for_config_line(stdin=stdin, stdout=stdout, existing=existing)
 
@@ -95,9 +102,12 @@ async def async_prompt_for_model(
     provider: Any,
     stdin: TextIO,
     stdout: TextIO,
+    menu_chrome: InlineMenuChrome | None = None,
 ) -> str:
     if _should_use_inline_menu(stdin=stdin, stdout=stdout):
-        return await _choose_model_async(provider=provider, stdout=stdout)
+        return await _choose_model_async(
+            provider=provider, stdout=stdout, menu_chrome=menu_chrome
+        )
     return _prompt_model_line(stdin=stdin, stdout=stdout, provider=provider)
 
 
@@ -135,6 +145,7 @@ async def async_prompt_for_sub_model(
     stdout: TextIO,
     current: str | None = None,
     allow_same: bool = True,
+    menu_chrome: InlineMenuChrome | None = None,
 ) -> str | None:
     if _should_use_inline_menu(stdin=stdin, stdout=stdout):
         return await _choose_sub_model_async(
@@ -143,6 +154,7 @@ async def async_prompt_for_sub_model(
             main_model=main_model,
             current=current,
             allow_same=allow_same,
+            menu_chrome=menu_chrome,
         )
     return _prompt_sub_model_line(
         stdin=stdin,
@@ -246,7 +258,11 @@ def _choose_sub_provider(
 
 
 async def _choose_sub_provider_async(
-    *, providers: list[Any], main_provider: Any, existing: Any | None
+    *,
+    providers: list[Any],
+    main_provider: Any,
+    existing: Any | None,
+    menu_chrome: InlineMenuChrome | None = None,
 ) -> Any | None:
     from .providers import get_provider
 
@@ -258,6 +274,7 @@ async def _choose_sub_provider_async(
         ),
         choices=_sub_provider_menu_choices(providers, main_provider),
         default=_default_sub_provider_id(providers, existing, main_provider),
+        menu_chrome=menu_chrome,
     )
     if selected in {SUB_PROVIDER_FOLLOWS_MAIN, main_provider.id}:
         return None
@@ -366,16 +383,21 @@ def _provider_config_interactive(
 
 
 async def _provider_config_interactive_async(
-    *, stdout: TextIO, provider: Any, existing: Any | None
+    *,
+    stdout: TextIO,
+    provider: Any,
+    existing: Any | None,
+    menu_chrome: InlineMenuChrome | None = None,
 ) -> Any:
     saved = existing.providers.get(provider.id) if existing is not None else None
     if saved is not None and await _reuse_saved_auth_interactive_async(
-        provider=provider
+        provider=provider, menu_chrome=menu_chrome
     ):
         return saved
     return await _prompt_provider_settings_interactive_async(
         provider_id=provider.id,
         stdout=stdout,
+        menu_chrome=menu_chrome,
     )
 
 
@@ -425,6 +447,7 @@ async def _prompt_for_config_interactive_async(
     *,
     stdout: TextIO,
     existing: Any | None = None,
+    menu_chrome: InlineMenuChrome | None = None,
 ) -> Any:
     from .providers import get_provider, list_providers
 
@@ -435,11 +458,17 @@ async def _prompt_for_config_interactive_async(
         text="Choose a provider. Use the arrow keys to move and Enter to select.",
         choices=_provider_menu_choices(providers, existing),
         default=_default_provider_id(providers, existing),
+        menu_chrome=menu_chrome,
     )
     provider = get_provider(provider_id)
-    model = await _choose_model_async(provider=provider, stdout=stdout)
+    model = await _choose_model_async(
+        provider=provider, stdout=stdout, menu_chrome=menu_chrome
+    )
     sub_provider = await _choose_sub_provider_async(
-        providers=providers, main_provider=provider, existing=existing
+        providers=providers,
+        main_provider=provider,
+        existing=existing,
+        menu_chrome=menu_chrome,
     )
     sub_model = await _choose_sub_model_async(
         provider=sub_provider or provider,
@@ -447,15 +476,22 @@ async def _prompt_for_config_interactive_async(
         main_model=model,
         current=_existing_sub_model(existing, provider, sub_provider),
         allow_same=sub_provider is None,
+        menu_chrome=menu_chrome,
     )
     provider_configs = {
         provider.id: await _provider_config_interactive_async(
-            stdout=stdout, provider=provider, existing=existing
+            stdout=stdout,
+            provider=provider,
+            existing=existing,
+            menu_chrome=menu_chrome,
         )
     }
     if sub_provider is not None:
         provider_configs[sub_provider.id] = await _provider_config_interactive_async(
-            stdout=stdout, provider=sub_provider, existing=existing
+            stdout=stdout,
+            provider=sub_provider,
+            existing=existing,
+            menu_chrome=menu_chrome,
         )
     return _merged_config(
         existing=existing,
@@ -732,6 +768,7 @@ async def _prompt_provider_settings_interactive_async(
     *,
     provider_id: str,
     stdout: TextIO,
+    menu_chrome: InlineMenuChrome | None = None,
 ) -> Any:
     from .config import ProviderConfig
     from .providers import get_provider
@@ -762,6 +799,7 @@ async def _prompt_provider_settings_interactive_async(
             text="How do you want to provide your API key?",
             choices=_key_source_menu_choices(provider),
             default=KEY_SOURCE_PASTE,
+            menu_chrome=menu_chrome,
         )
         if source == KEY_SOURCE_PASTE:
             api_key = await _prompt_text_interactive_async(
@@ -879,13 +917,16 @@ def _reuse_saved_auth_interactive(*, provider: Any) -> bool:
     )
 
 
-async def _reuse_saved_auth_interactive_async(*, provider: Any) -> bool:
+async def _reuse_saved_auth_interactive_async(
+    *, provider: Any, menu_chrome: InlineMenuChrome | None = None
+) -> bool:
     return (
         await _choose_from_menu_async(
             title=f"{provider.display_name} auth",
             text="This provider is already configured.",
             choices=_reuse_auth_menu_choices(provider),
             default=_REUSE_AUTH,
+            menu_chrome=menu_chrome,
         )
         == _REUSE_AUTH
     )
@@ -959,7 +1000,12 @@ def _choose_model(*, provider: Any, stdout: TextIO) -> str:
     return selected
 
 
-async def _choose_model_async(*, provider: Any, stdout: TextIO) -> str:
+async def _choose_model_async(
+    *,
+    provider: Any,
+    stdout: TextIO,
+    menu_chrome: InlineMenuChrome | None = None,
+) -> str:
     choices, installed = _model_choices_with_installed(provider)
     menu_choices = [
         MenuChoice(
@@ -982,6 +1028,7 @@ async def _choose_model_async(*, provider: Any, stdout: TextIO) -> str:
         text="Choose a model. Use the arrow keys to move and Enter to select.",
         choices=menu_choices,
         default=choices[0],
+        menu_chrome=menu_chrome,
     )
     if selected == CUSTOM_MODEL_SENTINEL:
         return await _prompt_text_interactive_async(
@@ -1065,6 +1112,7 @@ async def _choose_sub_model_async(
     main_model: str,
     current: str | None = None,
     allow_same: bool = True,
+    menu_chrome: InlineMenuChrome | None = None,
 ) -> str | None:
     menu_choices = _sub_model_menu_choices(provider, main_model, allow_same=allow_same)
     selected = await _choose_from_menu_async(
@@ -1072,6 +1120,7 @@ async def _choose_sub_model_async(
         text="Choose a cheaper model for RLM sub-calls, or keep the main model.",
         choices=menu_choices,
         default=_sub_model_menu_default(menu_choices, current),
+        menu_chrome=menu_chrome,
     )
     if selected == CUSTOM_MODEL_SENTINEL:
         return await _prompt_text_interactive_async(
@@ -1159,12 +1208,14 @@ async def _choose_from_menu_async(
     text: str,
     choices: Sequence[MenuChoice],
     default: str,
+    menu_chrome: InlineMenuChrome | None = None,
 ) -> str:
     app = _menu_application(
         title=title,
         text=text,
         choices=choices,
         default=default,
+        menu_chrome=menu_chrome,
     )
     try:
         result = await app.run_async()
@@ -1181,30 +1232,46 @@ def _menu_application(
     text: str,
     choices: Sequence[MenuChoice],
     default: str,
+    menu_chrome: InlineMenuChrome | None = None,
 ) -> Any:
     from prompt_toolkit.application import Application
+    from prompt_toolkit.data_structures import Point
     from prompt_toolkit.layout import Layout, Window
     from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.layout.dimension import Dimension
+    from prompt_toolkit.styles import merge_styles
 
     state = InlineMenuState.create(choices=choices, default=default)
     control = FormattedTextControl(
         lambda: _menu_fragments(title=title, text=text, state=state),
         focusable=True,
+        show_cursor=False,
+        get_cursor_position=lambda: Point(x=0, y=4 + state.active_index),
     )
+    menu_height = (
+        Dimension(min=1, preferred=min(len(choices) + 5, 12), weight=1)
+        if menu_chrome is not None
+        else len(choices) + 5
+    )
+    menu_window = Window(
+        content=control,
+        height=menu_height,
+        dont_extend_height=menu_chrome is None,
+        always_hide_cursor=True,
+    )
+    root_container = (
+        menu_chrome.frame(menu_window) if menu_chrome is not None else menu_window
+    )
+    style = _interactive_style()
+    if menu_chrome is not None and menu_chrome.style is not None:
+        style = merge_styles([style, menu_chrome.style])
     return Application(
-        layout=Layout(
-            Window(
-                content=control,
-                height=len(choices) + 5,
-                dont_extend_height=True,
-                always_hide_cursor=True,
-            )
-        ),
+        layout=Layout(root_container),
         key_bindings=_inline_menu_key_bindings(state),
-        style=_interactive_style(),
-        full_screen=False,
+        style=style,
+        full_screen=menu_chrome is not None,
         mouse_support=False,
-        erase_when_done=False,
+        erase_when_done=menu_chrome is not None,
     )
 
 

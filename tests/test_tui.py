@@ -273,46 +273,79 @@ def test_terminal_tui_renders_summary_as_native_output(tmp_path: Path) -> None:
 
 
 def test_terminal_tui_prompt_label_is_purple() -> None:
-    from fractal.tui.app import PROMPT_STYLE, render_prompt_label
+    from fractal.tui.app import PROMPT_ICON, PROMPT_STYLE, render_prompt_label
 
     label = render_prompt_label()
 
+    assert label.plain == f"{PROMPT_ICON} "
     assert label.spans[0].style == "bold #8b5cf6"
     assert PROMPT_STYLE.style_rules[0] == ("prompt", "bold #8b5cf6")
+
+
+def test_terminal_tui_user_message_does_not_reuse_input_prompt() -> None:
+    from fractal.tui.app import PROMPT_ICON, render_user_message
+
+    message = render_user_message("hello")
+    rendered = message.renderables[1]
+
+    assert rendered.plain == "you hello"
+    assert PROMPT_ICON not in rendered.plain
+
+
+def test_terminal_tui_prompt_label_uses_nerd_font_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fractal.tui.app import NERD_FONT_PROMPT_ICON, render_prompt_label
+
+    monkeypatch.setenv("FRACTAL_NERD_FONT", "1")
+
+    assert render_prompt_label().plain == f"{NERD_FONT_PROMPT_ICON} "
 
 
 def test_terminal_tui_prompt_continuation_has_no_ellipsis() -> None:
     from fractal.tui.app import _prompt_continuation
 
-    assert _prompt_continuation(8, 1, True) == "        "
+    assert _prompt_continuation(8, 1, True) == "  "
     assert "…" not in _prompt_continuation(8, 1, True)
 
 
 def test_terminal_tui_prompt_renderer_matches_prompt_toolkit_height() -> None:
     from prompt_toolkit.data_structures import Point
-    from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.layout.containers import FloatContainer, HSplit
     from prompt_toolkit.layout.controls import UIContent
     from prompt_toolkit.layout.screen import Screen, WritePosition
     from prompt_toolkit.output import DummyOutput
 
-    from fractal.tui.app import PROMPT_STYLE, _FooterPromptSession, _prompt_continuation
+    from fractal.tui.app import (
+        PROMPT_ICON,
+        PROMPT_STYLE,
+        _FixedFramePromptSession,
+        _prompt_continuation,
+    )
 
     width = 24
     text = "alpha beta gamma delta epsilon"
 
     def line_prefix(lineno: int, wrap_count: int) -> object:
         if wrap_count == 0:
-            return HTML("<prompt>fractal</prompt><session>›</session> ")
+            return [("class:prompt", PROMPT_ICON), ("", " ")]
         return _prompt_continuation(width, lineno, True)
 
+    def frame_factory(**kwargs: object) -> FloatContainer:
+        return FloatContainer(
+            HSplit([kwargs["message_area"], kwargs["input_body"]]),
+            kwargs["floats"],
+        )
+
     with create_pipe_input() as pipe_input:
-        session = _FooterPromptSession(
+        session = _FixedFramePromptSession(
             style=PROMPT_STYLE,
             input=pipe_input,
             output=DummyOutput(),
             multiline=True,
             prompt_continuation=_prompt_continuation,
+            frame_factory=frame_factory,
         )
         window = session._create_layout().current_window
 
@@ -339,28 +372,121 @@ def test_terminal_tui_prompt_renderer_matches_prompt_toolkit_height() -> None:
     assert drawn_height == estimated_height
 
 
-def test_terminal_tui_footer_filler_uses_small_weight() -> None:
-    from prompt_toolkit.input.defaults import create_pipe_input
-    from prompt_toolkit.layout.containers import HSplit, Window
-    from prompt_toolkit.output import DummyOutput
+def test_terminal_tui_fixed_frame_places_header_above_message_area(tmp_path: Path) -> None:
+    from prompt_toolkit.layout.containers import FloatContainer, HSplit, Window
 
-    from fractal.tui.app import PROMPT_STYLE, _FooterPromptSession, _prompt_continuation
+    from fractal.tui import TerminalFractalApp
+    from fractal.tui.app import (
+        FIXED_INPUT_MAX_ROWS,
+        FIXED_INPUT_MIN_ROWS,
+        FIXED_INPUT_PREFERRED_ROWS,
+    )
 
-    with create_pipe_input() as pipe_input:
-        session = _FooterPromptSession(
-            style=PROMPT_STYLE,
-            input=pipe_input,
-            output=DummyOutput(),
-            multiline=True,
-            prompt_continuation=_prompt_continuation,
-        )
-        layout = session._create_layout()
+    app = TerminalFractalApp(FakeRuntime(tmp_path))
+    layout = app.prompt_session._create_layout()
 
-    assert isinstance(layout.container, HSplit)
-    filler = layout.container.children[-1]
-    assert isinstance(filler, Window)
-    assert filler.height.preferred == 0
-    assert filler.height.weight == 1
+    assert isinstance(layout.container, FloatContainer)
+    assert isinstance(layout.container.content, HSplit)
+    header, message_area, input_frame = layout.container.content.children
+    assert isinstance(header, Window)
+    assert isinstance(message_area, Window)
+    assert isinstance(input_frame, HSplit)
+    assert input_frame.style == "class:fixed-input"
+    assert input_frame.height.min == FIXED_INPUT_MIN_ROWS
+    assert input_frame.height.preferred == FIXED_INPUT_PREFERRED_ROWS
+    assert input_frame.height.max == FIXED_INPUT_MAX_ROWS
+    assert header.height.preferred == 3
+    assert message_area.height.preferred == 0
+    assert message_area.height.weight == 1
+
+
+def test_terminal_tui_live_prompt_reserves_compact_completion_menu(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import fractal.tui.app as app_module
+    from fractal.tui import TerminalFractalApp
+
+    captured: dict[str, object] = {}
+
+    class RecordingPromptSession:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(app_module, "_FixedFramePromptSession", RecordingPromptSession)
+
+    TerminalFractalApp(FakeRuntime(tmp_path))
+
+    assert captured["reserve_space_for_menu"] == app_module.SLASH_COMPLETION_MENU_ROWS
+    assert captured["erase_when_done"] is False
+    assert "frame_factory" in captured
+
+
+def test_terminal_tui_fixed_frame_transcript_keeps_recent_messages(
+    tmp_path: Path,
+) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(tmp_path)
+    turn_id = runtime.session.add_user_message("keep this visible")
+    runtime.session.add_agent_turn(
+        status="succeeded",
+        response="still above the prompt",
+        changed_files=[],
+        turn_id=turn_id,
+    )
+    app = TerminalFractalApp(runtime)
+
+    text = "\n".join(app._fixed_transcript_lines())
+
+    assert "keep this visible" in text
+    assert "still above the prompt" in text
+    assert "❯ keep this visible" not in text
+
+
+def test_terminal_tui_fixed_frame_keeps_command_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(runtime, console=console)
+    monkeypatch.setattr(app, "_uses_live_fixed_frame", lambda: True)
+
+    app._handle_help()
+
+    transcript = "\n".join(app._fixed_transcript_lines())
+    assert "/provider" in output.getvalue()
+    assert "/provider" in transcript
+
+
+def test_terminal_tui_running_frame_is_status_not_prompt(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+    from fractal.tui.app import PROMPT_ICON, RUNNING_FRAME_TEXT
+
+    app = TerminalFractalApp(FakeRuntime(tmp_path))
+
+    rows = app._static_input_frame_rows(64, body=RUNNING_FRAME_TEXT)
+
+    assert RUNNING_FRAME_TEXT in rows[1]
+    assert PROMPT_ICON not in rows[1]
+
+
+def test_terminal_tui_pinned_running_frame_hides_cursor(tmp_path: Path) -> None:
+    from fractal.tui import TerminalFractalApp
+
+    runtime = FakeRuntime(tmp_path)
+    console, output = capture_console()
+    app = TerminalFractalApp(runtime, console=console)
+
+    app._pin_live_input_frame(body="running")
+    app._reset_live_scroll_region()
+
+    text = output.getvalue()
+    assert "\x1b[?25l" in text
+    assert "\x1b[?25h" in text
 
 
 def test_terminal_tui_renders_final_response_as_markdown(tmp_path: Path) -> None:
@@ -541,7 +667,8 @@ def test_terminal_tui_renders_live_iteration_events_once(tmp_path: Path) -> None
     assert "reasoning: Inspect the files first" in text
     assert "reasoning: Apply the edit." in text
     assert (
-        text.index("opening README.md")
+        text.index("fix")
+        < text.index("opening README.md")
         < text.index("RLM turn 1/3")
         < text.index("running uv run pytest")
         < text.index("RLM turn 2/3")
@@ -862,6 +989,7 @@ def test_terminal_tui_uses_prompt_toolkit_session_for_live_input(tmp_path: Path)
     assert runtime.submitted == ["fix"]
     assert prompt_session.prompts
     assert prompt_session.prompt_kwargs[0]["wrap_lines"] is True
+    assert text.index("fix") < text.index("response to fix")
     assert "response to fix" in text
 
 
@@ -911,7 +1039,7 @@ def test_terminal_tui_resume_command_requires_session_id(tmp_path: Path) -> None
     asyncio.run(app.run())
 
     assert runtime.resumed == []
-    assert "usage: /resume <session-id>" in output.getvalue()
+    assert "No stored sessions in this workspace." in output.getvalue()
 
 
 def test_terminal_tui_resume_command_errors_for_missing_session(tmp_path: Path) -> None:
@@ -1213,7 +1341,7 @@ def test_slash_command_completer_lists_commands() -> None:
     none_after_space = list(completer.get_completions(Document("/resume "), None))
 
     assert [completion.text for completion in model] == ["/model"]
-    assert [completion.text for completion in provider] == ["/provider"]
+    assert [completion.text for completion in provider] == ["/provider", "/providers"]
     assert [completion.text for completion in resume] == ["/resume"]
     assert [completion.text for completion in verbose] == ["/verbose"]
     assert none_after_space == []
@@ -1320,7 +1448,7 @@ def test_turn_footer_without_trace_is_plain_complete() -> None:
     assert footer == "✓ complete"
 
 
-def test_bottom_toolbar_shows_context_estimate_not_accumulated_usage(
+def test_input_frame_title_shows_context_estimate_not_accumulated_usage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1343,14 +1471,16 @@ def test_bottom_toolbar_shows_context_estimate_not_accumulated_usage(
     )
     app = TerminalFractalApp(runtime)
 
-    toolbar = "".join(fragment for _, fragment in app._bottom_toolbar_fragments())
+    title = "".join(fragment for _, fragment in app._input_frame_title_fragments())
 
-    assert "~7.4k ctx" in toolbar
-    assert "8.6k tok" not in toolbar
-    assert "$0.04" not in toolbar
+    assert "ctx" in title
+    assert "▰" in title
+    assert "~7.4k" in title
+    assert "8.6k tok" not in title
+    assert "$0.04" not in title
 
 
-def test_bottom_toolbar_omits_context_when_estimate_fails(
+def test_input_frame_title_omits_context_count_when_estimate_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1363,14 +1493,15 @@ def test_bottom_toolbar_omits_context_when_estimate_fails(
     runtime = FakeRuntime(tmp_path)
     app = TerminalFractalApp(runtime)
 
-    toolbar = "".join(fragment for _, fragment in app._bottom_toolbar_fragments())
+    title = "".join(fragment for _, fragment in app._input_frame_title_fragments())
+    header = "".join(fragment for _, fragment in app._fixed_header_fragments())
 
-    assert "model gpt-5.5" in toolbar
-    assert "verbose off" in toolbar
-    assert "ctx" not in toolbar
+    assert "model gpt-5.5" in header
+    assert "verbose off" in header
+    assert "ctx --" in title
 
 
-def test_bottom_toolbar_caches_context_estimate(
+def test_input_frame_title_caches_context_estimate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1387,10 +1518,46 @@ def test_bottom_toolbar_caches_context_estimate(
     runtime = FakeRuntime(tmp_path)
     app = TerminalFractalApp(runtime)
 
-    app._bottom_toolbar_fragments()
-    app._bottom_toolbar_fragments()
+    app._input_frame_title_fragments()
+    app._input_frame_title_fragments()
 
     assert calls == 1
+
+
+def test_terminal_tui_prompt_layout_has_fixed_header_and_middle_message_area(
+    tmp_path: Path,
+) -> None:
+    from prompt_toolkit.layout.containers import FloatContainer, HSplit, Window
+
+    from fractal.tui import TerminalFractalApp
+    from fractal.tui.app import (
+        FIXED_INPUT_MAX_ROWS,
+        FIXED_INPUT_MIN_ROWS,
+        FIXED_INPUT_PREFERRED_ROWS,
+    )
+
+    runtime = FakeRuntime(tmp_path)
+    app = TerminalFractalApp(runtime)
+
+    layout = app.prompt_session._create_layout()
+
+    assert isinstance(layout.container, FloatContainer)
+    assert isinstance(layout.container.content, HSplit)
+    assert layout.container.floats
+    assert len(layout.container.content.children) >= 3
+    header, message_area, prompt_layout = layout.container.content.children[:3]
+    assert isinstance(header, Window)
+    assert isinstance(message_area, Window)
+    assert header.height.preferred == 3
+    assert message_area.height.weight == 1
+    assert prompt_layout is not None
+    assert prompt_layout.height.min == FIXED_INPUT_MIN_ROWS
+    assert prompt_layout.height.preferred == FIXED_INPUT_PREFERRED_ROWS
+    assert prompt_layout.height.max == FIXED_INPUT_MAX_ROWS
+    header_text = "".join(fragment for _, fragment in app._fixed_header_fragments())
+    assert "Fractal" in header_text
+    assert "session test-session" in header_text
+    assert "model gpt-5.5" in header_text
 
 
 def test_terminal_tui_help_command_lists_commands(tmp_path: Path) -> None:
@@ -1520,6 +1687,67 @@ def test_terminal_tui_sessions_command_lists_stored_sessions(tmp_path: Path) -> 
     text = normalized_output(output.getvalue())
     assert stored.session_id in text
     assert "add a login page" in text
+
+
+def test_terminal_tui_sessions_command_selects_session_to_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.session import FractalSession
+    from fractal.tui import TerminalFractalApp
+
+    stored = FractalSession()
+    stored.add_user_message(
+        "pick this session\nunknown command: /providers (try /help)\nextra detail"
+    )
+    stored.save(tmp_path)
+    runtime = FakeRuntime(tmp_path)
+    console, _ = capture_console()
+    app = TerminalFractalApp(runtime, console=console)
+    monkeypatch.setattr(app, "_uses_live_fixed_frame", lambda: True)
+    captured: dict[str, object] = {}
+
+    async def choose(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return stored.session_id
+
+    monkeypatch.setattr("fractal.onboarding._choose_from_menu_async", choose)
+
+    asyncio.run(app._handle_sessions())
+
+    assert runtime.resumed == [stored.session_id]
+    assert runtime.session_id == stored.session_id
+    assert captured["title"] == "Sessions"
+    choices = captured["choices"]
+    choice = next(choice for choice in choices if choice.value == stored.session_id)
+    assert "\n" not in choice.detail
+    assert len(choice.detail) <= 84
+
+
+def test_terminal_tui_resume_without_id_selects_session_to_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fractal.session import FractalSession
+    from fractal.tui import TerminalFractalApp
+
+    stored = FractalSession()
+    stored.add_user_message("resume this session")
+    stored.save(tmp_path)
+    runtime = FakeRuntime(tmp_path)
+    console, _ = capture_console()
+    app = TerminalFractalApp(runtime, console=console)
+    monkeypatch.setattr(app, "_uses_live_fixed_frame", lambda: True)
+
+    async def choose(**kwargs: object) -> str:
+        return stored.session_id
+
+    monkeypatch.setattr("fractal.onboarding._choose_from_menu_async", choose)
+
+    asyncio.run(app._handle_resume(""))
+
+    assert runtime.resumed == [stored.session_id]
+    assert runtime.session_id == stored.session_id
 
 
 def test_terminal_tui_verbose_command_toggles(tmp_path: Path) -> None:
