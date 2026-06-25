@@ -1,10 +1,12 @@
-"""Stealth PyPI update check.
+"""Stealth website update check.
 
-On startup Fractal quietly asks PyPI whether a newer release of the
-``fractal-rlm`` distribution exists and, if so, surfaces a one-line yellow
-notice with the upgrade command. The check is best-effort: it runs on a daemon
-thread, never blocks the CLI, caches its answer for a day, and swallows every
-error so an offline machine or a flaky network is silent rather than noisy.
+On startup Fractal quietly asks the Fractal website whether a newer release of
+the ``fractal-rlm`` distribution exists and, if so, surfaces a one-line yellow
+notice with the upgrade command. The request includes an anonymous install ID so
+the website can count active installs. The check is best-effort: it runs on a
+daemon thread, never blocks the CLI, keeps a one-day fallback cache of the latest
+version, and swallows every error so an offline machine or a flaky network is
+silent rather than noisy.
 """
 
 from __future__ import annotations
@@ -13,11 +15,12 @@ import json
 import threading
 import time
 import urllib.request
+import uuid
 from importlib import metadata
 from pathlib import Path
 
 PACKAGE_NAME = "fractal-rlm"
-PYPI_URL = f"https://pypi.org/pypi/{PACKAGE_NAME}/json"
+VERSION_CHECK_URL = "https://fractal.trampoline.ai/api/version-check"
 UPGRADE_COMMAND = f"uv tool upgrade {PACKAGE_NAME}"
 
 FETCH_TIMEOUT_SECONDS = 2.0
@@ -41,13 +44,31 @@ def _cache_path() -> Path:
     return default_config_path().parent / "version_check.json"
 
 
-def _read_cached_latest() -> str | None:
+def _read_cache() -> dict[str, object]:
     try:
-        raw = _cache_path().read_text()
+        raw = _cache_path().read_text(encoding="utf-8")
     except (OSError, ValueError):
-        return None
+        return {}
     try:
         payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_cache(payload: dict[str, object]) -> None:
+    path = _cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
+        # Caching is an optimisation; a read-only home directory is not an error.
+        pass
+
+
+def _read_cached_latest() -> str | None:
+    payload = _read_cache()
+    try:
         fetched_at = float(payload["fetched_at"])
         latest = payload["latest"]
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
@@ -60,33 +81,66 @@ def _read_cached_latest() -> str | None:
 
 
 def _write_cached_latest(latest: str) -> None:
-    path = _cache_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"latest": latest, "fetched_at": time.time()}))
-    except OSError:
-        # Caching is an optimisation; a read-only home directory is not an error.
-        pass
+    payload = _read_cache()
+    payload["latest"] = latest
+    payload["fetched_at"] = time.time()
+    _write_cache(payload)
 
 
-def _fetch_latest_from_pypi() -> str | None:
+def _install_id() -> str:
+    payload = _read_cache()
+    cached = payload.get("install_id")
+    if isinstance(cached, str) and cached:
+        return cached
+    install_id = str(uuid.uuid4())
+    payload["install_id"] = install_id
+    _write_cache(payload)
+    return install_id
+
+
+def _build_payload() -> dict[str, object]:
+    return {
+        "install_id": _install_id(),
+        "current_version": current_version(),
+    }
+
+
+def _user_agent(current: str | None) -> str:
+    return f"{PACKAGE_NAME}/{current or 'unknown'}"
+
+
+def _fetch_latest_from_website() -> str | None:
+    payload = _build_payload()
+    body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
-        PYPI_URL, headers={"Accept": "application/json"}
+        VERSION_CHECK_URL,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": _user_agent(
+                payload.get("current_version")
+                if isinstance(payload.get("current_version"), str)
+                else None
+            ),
+        },
     )
     with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
         payload = json.loads(response.read().decode("utf-8"))
-    latest = payload.get("info", {}).get("version")
+    latest = payload.get("latest")
     return latest if isinstance(latest, str) else None
 
 
 def _resolve_latest() -> str | None:
     cached = _read_cached_latest()
-    if cached is not None:
+    try:
+        latest = _fetch_latest_from_website()
+    except Exception:
         return cached
-    latest = _fetch_latest_from_pypi()
     if latest is not None:
         _write_cached_latest(latest)
-    return latest
+        return latest
+    return cached
 
 
 def _is_newer(latest: str, current: str) -> bool:
@@ -109,7 +163,7 @@ def format_notice(current: str, latest: str) -> str:
 
 
 class UpdateNotifier:
-    """Runs the PyPI check on a daemon thread and yields a notice when ready."""
+    """Runs the website check on a daemon thread and yields a notice when ready."""
 
     def __init__(self) -> None:
         self._thread: threading.Thread | None = None
