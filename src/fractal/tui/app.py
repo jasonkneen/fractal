@@ -77,6 +77,7 @@ PROMPT_STYLE = Style.from_dict(
         "fixed-input": "noreverse",
         "fixed-input.border": "#4b5563",
         "fixed-input.title": "#6b7280",
+        "startup-banner": "bold #8b5cf6",
     }
 )
 SLASH_COMPLETION_MENU_ROWS = 0
@@ -572,34 +573,46 @@ class TerminalFractalApp:
         )
 
     def _fixed_transcript_fragments(self) -> list[tuple[str, str]]:
-        return [("", "\n".join(self._fixed_transcript_lines()))]
+        fragments: list[tuple[str, str]] = []
+        for style, line in self._fixed_transcript_rows():
+            if fragments:
+                fragments.append(("", "\n"))
+            fragments.append((style, line))
+        return fragments or [("", "")]
 
     def _fixed_transcript_lines(self) -> list[str]:
+        return [line for _, line in self._fixed_transcript_rows()]
+
+    def _fixed_transcript_rows(self) -> list[tuple[str, str]]:
         visible_rows = max(self.console.height - FIXED_INPUT_ROWS - 3, 1)
         width = max(self.console.width - 2, 20)
-        lines: list[str] = []
+        rows: list[tuple[str, str]] = []
         if self._startup_banner_lines:
-            lines.extend(self._startup_banner_lines)
-            lines.append("")
+            rows.extend(
+                ("class:startup-banner", line) for line in self._startup_banner_lines
+            )
+            rows.append(("", ""))
         try:
             turns = self.runtime.session.summary_model.turns
         except Exception:
             turns = []
         for turn in turns:
-            lines.extend(
-                self._wrap_transcript_text(
-                    f"{USER_MESSAGE_LABEL} {turn.user.message}",
-                    width,
+            rows.extend(
+                ("", line)
+                for line in self._wrap_transcript_text(
+                    f"{USER_MESSAGE_LABEL} {turn.user.message}", width
                 )
             )
             if turn.agent is None:
-                lines.append("  …")
+                rows.append(("", "  …"))
             else:
                 response = turn.agent.response.strip() or f"[{turn.agent.status}]"
-                lines.extend(self._wrap_transcript_text(response, width))
-            lines.append("")
-        lines.extend(self._fixed_command_lines)
-        return lines[-visible_rows:]
+                rows.extend(
+                    ("", line) for line in self._wrap_transcript_text(response, width)
+                )
+            rows.append(("", ""))
+        rows.extend(("", line) for line in self._fixed_command_lines)
+        return rows[-visible_rows:]
 
     def _wrap_transcript_text(self, text: str, width: int) -> list[str]:
         wrapped: list[str] = []

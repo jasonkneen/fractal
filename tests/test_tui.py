@@ -453,9 +453,18 @@ def test_terminal_tui_fixed_frame_transcript_includes_startup_banner(
     app = TerminalFractalApp(FakeRuntime(tmp_path), banner=FRACTAL_BANNER)
 
     text = "\n".join(app._fixed_transcript_lines())
+    fragments = app._fixed_transcript_fragments()
 
     assert "______              _        _" in text
     assert "|  ____|" in text
+    assert any(
+        style == "class:startup-banner" and "______              _        _" in line
+        for style, line in fragments
+    )
+    assert any(
+        style == "class:startup-banner" and "|  ____|" in line
+        for style, line in fragments
+    )
 
 
 def test_terminal_tui_fixed_frame_keeps_command_output(
