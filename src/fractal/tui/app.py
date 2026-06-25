@@ -302,7 +302,7 @@ def _prompt_icon() -> str:
 def _context_level_bar(tokens: int) -> str:
     filled = min(
         CONTEXT_LEVEL_SEGMENTS,
-        max(1, (tokens + CONTEXT_LEVEL_SEGMENT_TOKENS - 1) // CONTEXT_LEVEL_SEGMENT_TOKENS),
+        (max(tokens, 0) + CONTEXT_LEVEL_SEGMENT_TOKENS - 1) // CONTEXT_LEVEL_SEGMENT_TOKENS,
     )
     empty = CONTEXT_LEVEL_SEGMENTS - filled
     return f"{'▰' * filled}{'▱' * empty}"
