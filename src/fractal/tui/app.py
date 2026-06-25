@@ -380,6 +380,7 @@ class TerminalFractalApp:
         self.input_stream = input_stream
         self.verbose_iterations = verbose_iterations
         self.banner = banner
+        self._startup_banner_lines = str(banner).splitlines() if banner else []
         self.update_notice = update_notice
         self.config_stdin = config_stdin or input_stream or sys.stdin
         self.config_stdout = config_stdout or getattr(self.console, "file", sys.stdout)
@@ -577,6 +578,9 @@ class TerminalFractalApp:
         visible_rows = max(self.console.height - FIXED_INPUT_ROWS - 3, 1)
         width = max(self.console.width - 2, 20)
         lines: list[str] = []
+        if self._startup_banner_lines:
+            lines.extend(self._startup_banner_lines)
+            lines.append("")
         try:
             turns = self.runtime.session.summary_model.turns
         except Exception:

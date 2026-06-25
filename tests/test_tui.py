@@ -444,6 +444,20 @@ def test_terminal_tui_fixed_frame_transcript_keeps_recent_messages(
     assert "❯ keep this visible" not in text
 
 
+def test_terminal_tui_fixed_frame_transcript_includes_startup_banner(
+    tmp_path: Path,
+) -> None:
+    from fractal.cli import FRACTAL_BANNER
+    from fractal.tui import TerminalFractalApp
+
+    app = TerminalFractalApp(FakeRuntime(tmp_path), banner=FRACTAL_BANNER)
+
+    text = "\n".join(app._fixed_transcript_lines())
+
+    assert "______              _        _" in text
+    assert "|  ____|" in text
+
+
 def test_terminal_tui_fixed_frame_keeps_command_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
