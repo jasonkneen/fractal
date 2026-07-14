@@ -261,6 +261,7 @@ def run_tui(args: argparse.Namespace, notifier: Any | None = None) -> int:
         else "[dim]starting sandbox (reusing hot sandbox if available)...[/dim]"
     )
     runtime = None
+    prewarm_complete = False
     try:
         if args.fresh and reuse_sandbox:
             from .agent.service import remove_sandbox_for
@@ -278,10 +279,12 @@ def run_tui(args: argparse.Namespace, notifier: Any | None = None) -> int:
             provider_selection=lm_config.provider_selection,
             sub_lm_follows_main=lm_config.sub_lm_follows_main,
             sub_model=lm_config.sub_model,
+            lm_num_retries=lm_config.lm_num_retries,
             reuse_sandbox=reuse_sandbox,
         )
         with console.status(status_text, spinner="dots"):
             runtime.prewarm()
+        prewarm_complete = True
         asyncio.run(
             TerminalFractalApp(
                 runtime,
@@ -292,15 +295,23 @@ def run_tui(args: argparse.Namespace, notifier: Any | None = None) -> int:
             ).run()
         )
     except Exception as exc:
-        console.print(f"fractal: {user_facing_error(exc)}", style="red")
+        console.print(
+            f"fractal: {user_facing_error(exc)}",
+            style="red",
+            markup=False,
+            soft_wrap=True,
+        )
         return 1
     finally:
         if runtime is not None:
             try:
-                with console.status(
-                    "[dim]shutting down sandbox... press Ctrl-C again to force exit without cleaning up the sandbox[/dim]",
-                    spinner="dots",
-                ):
+                if prewarm_complete:
+                    with console.status(
+                        "[dim]shutting down sandbox... press Ctrl-C again to force exit without cleaning up the sandbox[/dim]",
+                        spinner="dots",
+                    ):
+                        runtime.close()
+                else:
                     runtime.close()
             except KeyboardInterrupt:
                 console.print(
@@ -382,6 +393,7 @@ def run_non_interactive(
             provider_selection=lm_config.provider_selection,
             sub_lm_follows_main=lm_config.sub_lm_follows_main,
             sub_model=lm_config.sub_model,
+            lm_num_retries=lm_config.lm_num_retries,
             reuse_sandbox=reuse_sandbox,
         )
     except Exception as exc:

@@ -95,6 +95,45 @@ def test_cli_parser_accepts_verbose() -> None:
     assert args.verbose is True
 
 
+def test_runtime_model_label_uses_dspy_lm_model_for_explicit_lm() -> None:
+    import dspy
+
+    from fractal.runtime import FractalRuntime
+
+    lm = dspy.LM(model="openai/gpt-test")
+    runtime = FractalRuntime(
+        workspace_path=Path.cwd(),
+        session=object(),  # type: ignore[arg-type]
+        agent=object(),  # type: ignore[arg-type]
+        lm=lm,
+        sub_lm=lm,
+    )
+
+    assert runtime.model_label == "openai/gpt-test"
+    assert "dspy.clients" not in runtime.model_label
+
+
+def test_runtime_sub_model_label_uses_dspy_lm_model_for_explicit_sub_lm() -> None:
+    import dspy
+
+    from fractal.runtime import FractalRuntime
+
+    lm = dspy.LM(model="openai/gpt-main")
+    sub_lm = dspy.LM(model="openai/gpt-sub")
+    runtime = FractalRuntime(
+        workspace_path=Path.cwd(),
+        session=object(),  # type: ignore[arg-type]
+        agent=object(),  # type: ignore[arg-type]
+        lm=lm,
+        sub_lm=sub_lm,
+        sub_lm_follows_main=False,
+    )
+
+    assert runtime.model_label == "openai/gpt-main"
+    assert runtime.sub_model_label == "openai/gpt-sub"
+    assert "dspy.clients" not in runtime.sub_model_label
+
+
 def test_cli_main_dispatches_non_interactive_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     from fractal import cli
 
@@ -509,7 +548,7 @@ def test_run_tui_shows_shutdown_status_and_closes_runtime(
             events.append("status_exit")
 
     class FakeConsole:
-        def print(self, message: str, *, style: str | None = None) -> None:
+        def print(self, message: str, *, style: str | None = None, **kwargs: object) -> None:
             events.append(f"print:{message}:{style}")
 
         def status(self, message: str, *, spinner: str) -> FakeStatus:
@@ -599,8 +638,8 @@ def test_run_tui_reports_sbx_auth_failure_without_traceback(
             events.append("status_exit")
 
     class FakeConsole:
-        def print(self, message: str, *, style: str | None = None) -> None:
-            events.append(f"print:{message}:{style}")
+        def print(self, message: str, *, style: str | None = None, **kwargs: object) -> None:
+            events.append(f"print:{message}:{style}:{kwargs}")
 
         def status(self, message: str, *, spinner: str) -> FakeStatus:
             events.append(f"status:{message}:{spinner}")
@@ -654,9 +693,11 @@ def test_run_tui_reports_sbx_auth_failure_without_traceback(
     assert result == 1
     assert (
         "print:fractal: Your sbx CLI is not logged in to Docker. "
-        "Run `sbx login`, then try Fractal again.:red"
+        "Run `sbx login`, then try Fractal again.:red:"
+        "{'markup': False, 'soft_wrap': True}"
     ) in events
     assert "close" in events
+    assert not any("shutting down sandbox" in event for event in events)
 
 
 def test_run_tui_allows_force_exit_during_shutdown(
@@ -1081,6 +1122,97 @@ def test_agent_aforward_omits_empty_included_paths(
     assert isinstance(acall_kwargs, dict)
     assert acall_kwargs["included_paths"] is None
 
+
+def test_agent_aforward_does_not_pass_lm_retries_as_rlm_inputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    if not workspace_available():
+        pytest.skip("predict_rlm.Workspace is not exported by the local branch yet")
+
+    from fractal.agent import service
+
+    class FakeLM:
+        num_retries = 3
+
+    calls: dict[str, object] = {}
+
+    class FakePredictRLM:
+        def __init__(self, signature: object, **kwargs: object) -> None:
+            calls["predictor_kwargs"] = kwargs
+
+        async def acall(self, **kwargs: object) -> object:
+            calls["acall_kwargs"] = kwargs
+            return SimpleNamespace(response="done", changed_files=[], trace=None)
+
+    monkeypatch.setattr(service, "PredictRLM", FakePredictRLM)
+
+    lm = FakeLM()
+    agent = service.FractalAgent(lm=lm, sub_lm=lm, max_iterations=7, verbose=False)
+    asyncio.run(agent.aforward(tmp_path, "update the README"))
+
+    predictor_kwargs = calls["predictor_kwargs"]
+    acall_kwargs = calls["acall_kwargs"]
+    assert isinstance(predictor_kwargs, dict)
+    assert isinstance(acall_kwargs, dict)
+    assert predictor_kwargs["lm"] is lm
+    assert predictor_kwargs["sub_lm"] is lm
+    assert lm.num_retries == 3
+    assert "num_retries" not in acall_kwargs
+
+
+def test_resolved_lm_num_retries_reaches_underlying_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dspy.clients.lm as dspy_lm
+
+    from fractal.config import DEFAULT_LM_NUM_RETRIES
+    from fractal.runtime_lms import resolve_runtime_lms
+
+    lm_config = resolve_runtime_lms(
+        SimpleNamespace(lm="openai/test-model", sub_lm=None),
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=StringIO(),
+        auto_setup=False,
+    )
+
+    class FakeLiteLLMResponse(dict):
+        def __getattr__(self, name: str) -> object:
+            try:
+                return self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+    provider_attempts: list[int] = []
+    completion_retry_budgets: list[int] = []
+
+    def fake_completion(**kwargs: object) -> object:
+        num_retries = kwargs["num_retries"]
+        completion_retry_budgets.append(num_retries)
+        failures = 0
+        while True:
+            provider_attempts.append(len(provider_attempts) + 1)
+            if len(provider_attempts) == DEFAULT_LM_NUM_RETRIES:
+                return FakeLiteLLMResponse(
+                    model=kwargs["model"],
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason="stop",
+                            message=SimpleNamespace(content="recovered after retry"),
+                        )
+                    ],
+                    usage={},
+                    _hidden_params={},
+                )
+            if failures >= num_retries:
+                raise RuntimeError("transient provider failure")
+            failures += 1
+
+    monkeypatch.setattr(dspy_lm.litellm, "completion", fake_completion)
+
+    assert lm_config.lm("hello", cache=False) == ["recovered after retry"]
+    assert completion_retry_budgets == [DEFAULT_LM_NUM_RETRIES]
+    assert provider_attempts == [1, 2, 3]
 
 def test_build_direct_workspace_mounts_uses_absolute_paths(tmp_path: Path) -> None:
     if not workspace_available():
